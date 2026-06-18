@@ -1,0 +1,54 @@
+{
+  "project_info": {
+    "project_number": "907777869327",
+    "project_id": "smart-shopping-list-d91fd",
+    "storage_bucket": "smart-shopping-list-d91fd.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:907777869327:android:12573b71417b94e978c57a",
+        "android_client_info": {
+          "package_name": "com.steven_vcnt.smart_shopping_list"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "907777869327-e0epv91tv35t09r5bbbokq3ub0cjgui9.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.steven_vcnt.smart_shopping_list",
+            "certificate_hash": "592abcf060e51715983a737543e679f72f4d0af5"
+          }
+        },
+        {
+          "client_id": "907777869327-lj36roie54i54u2l26sddoels8t3unbu.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBczbArhxVsFlLm0pDFOZ4fz9Xg63jCNl4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "907777869327-lj36roie54i54u2l26sddoels8t3unbu.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "907777869327-518nn1vrnog2drq80tt5af4bfrbp0bpm.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.smartShoppingList"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
