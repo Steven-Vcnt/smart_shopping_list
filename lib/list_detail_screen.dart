@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:isar/isar.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
-import 'package:share_plus/share_plus.dart'; // NEW: The native share package!
+import 'package:share_plus/share_plus.dart';
 import 'models/database_models.dart';
 import 'widgets/add_item_dialog.dart';
 import 'widgets/smart_list_item_card.dart';
-import 'widgets/sync_banner.dart'; 
+import 'widgets/sync_banner.dart';
+import 'widgets/prediction_banner.dart';
 import 'sync_service.dart';
 
 class ListDetailScreen extends StatefulWidget {
@@ -30,6 +31,9 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
   String _activeTab = 'All'; 
   bool _isLoadingShops = true;
   int? _expandedItemIndex;
+  
+  // --- NEW: Track the last checked item for our Undo button ---
+  String? _lastCheckedItemName;
 
   @override
   void initState() {
@@ -102,7 +106,6 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
     widget.syncService.syncNow(); 
   }
 
-  // --- UPDATED: THE SHARE DIALOG WITH TEXT MESSAGE TRIGGER ---
   void _showShareDialog() {
     final TextEditingController emailController = TextEditingController();
 
@@ -138,9 +141,8 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
                   }
                 });
                 _saveListState(); 
-                Navigator.pop(context); // Close the dialog
+                Navigator.pop(context); 
                 
-                // NEW: Pop open the native Android/iOS share sheet!
                 Share.share(
                   'Hey! I just shared the "${_currentList.name}" list with you on Smart Grocery. Open the app to see it!',
                 );
@@ -162,10 +164,8 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
       setState(() {
         if (_currentList.items[existingIndex].isChecked) {
           _currentList.items[existingIndex].isChecked = false;
-          if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Un-crossed "$cleanName" from your list!')));
         } else {
           _currentList.items[existingIndex].quantity = (_currentList.items[existingIndex].quantity ?? 1.0) + quantity;
-          if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Increased quantity for "$cleanName"!')));
         }
         _currentList.items = List.from(_currentList.items);
       });
@@ -244,18 +244,114 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
   void _showEmojiPicker(int index) {
     showModalBottomSheet(
       context: context,
-      builder: (ctx) => EmojiPicker(
-        onEmojiSelected: (category, emoji) {
-          setState(() { _currentList.items[index].emoji = emoji.emoji; _currentList.items = List.from(_currentList.items); });
-          _saveListState();
-          Navigator.pop(ctx);
-        },
+      isScrollControlled: true, 
+      builder: (ctx) => SizedBox(
+        height: MediaQuery.of(context).size.height * 0.5, 
+        child: EmojiPicker(
+          config: Config(
+            bottomActionBarConfig: const BottomActionBarConfig(
+              showSearchViewButton: true, 
+              showBackspaceButton: true,
+            ),
+            searchViewConfig: const SearchViewConfig(
+              hintText: 'Rechercher un emoji...', 
+            ),
+            categoryViewConfig: CategoryViewConfig(
+              iconColorSelected: Colors.blue.shade700,
+              indicatorColor: Colors.blue.shade700,
+            ),
+          ),
+          onEmojiSelected: (category, emoji) async {
+            final newEmoji = emoji.emoji;
+            final itemName = _currentList.items[index].name!;
+
+            setState(() { 
+              _currentList.items[index].emoji = newEmoji; 
+              _currentList.items = List.from(_currentList.items); 
+            });
+            _saveListState();
+            
+            final master = await widget.isar.masterProducts.where().nameEqualTo(itemName).findFirst();
+            if (master != null) {
+              master.emoji = newEmoji;
+              await widget.isar.writeTxn(() async { 
+                await widget.isar.masterProducts.put(master); 
+              });
+            }
+
+            if (mounted) Navigator.pop(ctx);
+          },
+        ),
       ),
     );
   }
 
   void _showAddItemDialog() {
     showDialog(context: context, builder: (context) => AddItemDialog(isar: widget.isar, onAdd: _addItem));
+  }
+
+  // --- NEW: Toggle Logic mapped to AppBar Undo instead of SnackBar ---
+  Future<void> _toggleItemCheck(int index, bool newValue) async {
+    final item = _currentList.items[index];
+    final itemName = item.name;
+
+    setState(() {
+      item.isChecked = newValue;
+      
+      // If we check it off, save it as the "last checked" for the Undo button
+      if (newValue == true) {
+        _lastCheckedItemName = itemName;
+      } else if (_lastCheckedItemName == itemName) {
+        // If they manually uncheck the item they just checked, hide the undo button
+        _lastCheckedItemName = null;
+      }
+    });
+    
+    await _sortList();
+    if (!mounted) return;
+
+    // UPDATE PREDICTIONS: We only register a "purchase" if it's checked off
+    if (newValue == true && itemName != null) {
+      final master = await widget.isar.masterProducts.where().nameEqualTo(itemName).findFirst();
+      if (master != null) {
+        await widget.isar.writeTxn(() async {
+          // CHEAT CODE FOR PREDICTION BANNER TESTING:
+          master.lastPurchasedAt = DateTime.now().subtract(const Duration(days: 12)); 
+          await widget.isar.masterProducts.put(master);
+        });
+      }
+    }
+  }
+
+  // --- NEW: The Undo Logic ---
+  Future<void> _undoLastCheck() async {
+    if (_lastCheckedItemName == null) return;
+    
+    final itemNameToUndo = _lastCheckedItemName!;
+    
+    setState(() {
+      // Find the item and uncheck it
+      for (var item in _currentList.items) {
+        if (item.name == itemNameToUndo) {
+          item.isChecked = false;
+          break;
+        }
+      }
+      // Hide the Undo button now that we've used it
+      _lastCheckedItemName = null;
+    });
+    
+    await _sortList();
+    if (!mounted) return;
+
+    // Remove the "purchased" timestamp from the database so the prediction banner stays accurate
+    final master = await widget.isar.masterProducts.where().nameEqualTo(itemNameToUndo).findFirst();
+    if (master != null) {
+       await widget.isar.writeTxn(() async {
+         master.lastPurchasedAt = null; 
+         await widget.isar.masterProducts.put(master);
+       });
+    }
   }
 
   @override
@@ -268,13 +364,19 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
       appBar: AppBar(
         title: Text(_currentList.name),
         actions: [
+          // THE NEW UNDO BUTTON - Only shows if an item was recently checked off!
+          if (_lastCheckedItemName != null)
+            IconButton(
+              icon: const Icon(Icons.undo),
+              tooltip: 'Undo',
+              onPressed: _undoLastCheck,
+            ),
+            
           IconButton(
             icon: const Icon(Icons.person_add_alt_1),
             tooltip: 'Share List',
             onPressed: _showShareDialog,
           ),
-          if (_currentList.type == ListType.restock || _currentList.type == ListType.quickRun)
-            IconButton(icon: const Icon(Icons.delete_sweep), onPressed: () { setState(() => _currentList.items = _currentList.items.where((item) => !item.isChecked).toList()); _saveListState(); }),
           if (_currentList.type == ListType.reusable)
             IconButton(icon: const Icon(Icons.refresh), onPressed: () { setState(() { for (var item in _currentList.items) { item.isChecked = false; } _currentList.items = List.from(_currentList.items); }); _saveListState(); }),
         ],
@@ -282,6 +384,13 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
       body: Column(
         children: [
           SyncBanner(syncService: widget.syncService),
+          
+          PredictionBanner(
+            isar: widget.isar,
+            currentItems: _currentList.items,
+            onAdd: (name, emoji, qty) => _addItem(name, emoji, qty, []),
+          ),
+          
           if (_currentList.type == ListType.restock) ...[
             if (_isLoadingShops) 
               const SizedBox(height: 60, child: Center(child: CircularProgressIndicator()))
@@ -346,7 +455,11 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
                           onShopToggled: (shopName, isSelected) => _toggleShopForItem(realIndex, shopName, isSelected), 
                           onTap: () => setState(() => _expandedItemIndex = _expandedItemIndex == realIndex ? null : realIndex),
                           onEmojiTap: () => _showEmojiPicker(realIndex),
-                          onToggle: (val) { setState(() => _currentList.items[realIndex].isChecked = val!); _sortList(); },
+                          onToggle: (val) {
+                             if (val != null) {
+                               _toggleItemCheck(realIndex, val); 
+                             }
+                          },
                           onQuantityChange: (delta) => _updateQuantity(realIndex, delta),
                         ),
                       );

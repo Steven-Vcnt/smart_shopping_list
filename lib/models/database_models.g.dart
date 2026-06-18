@@ -1896,28 +1896,44 @@ const MasterProductSchema = CollectionSchema(
   name: r'MasterProduct',
   id: 2083704541719275319,
   properties: {
-    r'defaultCategory': PropertySchema(
+    r'companions': PropertySchema(
       id: 0,
+      name: r'companions',
+      type: IsarType.objectList,
+      target: r'CompanionItem',
+    ),
+    r'cycleDays': PropertySchema(
+      id: 1,
+      name: r'cycleDays',
+      type: IsarType.long,
+    ),
+    r'defaultCategory': PropertySchema(
+      id: 2,
       name: r'defaultCategory',
       type: IsarType.string,
     ),
     r'defaultShops': PropertySchema(
-      id: 1,
+      id: 3,
       name: r'defaultShops',
       type: IsarType.stringList,
     ),
     r'emoji': PropertySchema(
-      id: 2,
+      id: 4,
       name: r'emoji',
       type: IsarType.string,
     ),
+    r'lastPurchasedAt': PropertySchema(
+      id: 5,
+      name: r'lastPurchasedAt',
+      type: IsarType.dateTime,
+    ),
     r'name': PropertySchema(
-      id: 3,
+      id: 6,
       name: r'name',
       type: IsarType.string,
     ),
     r'shopHabits': PropertySchema(
-      id: 4,
+      id: 7,
       name: r'shopHabits',
       type: IsarType.objectList,
       target: r'ShopHabit',
@@ -1944,7 +1960,10 @@ const MasterProductSchema = CollectionSchema(
     )
   },
   links: {},
-  embeddedSchemas: {r'ShopHabit': ShopHabitSchema},
+  embeddedSchemas: {
+    r'ShopHabit': ShopHabitSchema,
+    r'CompanionItem': CompanionItemSchema
+  },
   getId: _masterProductGetId,
   getLinks: _masterProductGetLinks,
   attach: _masterProductAttach,
@@ -1957,6 +1976,15 @@ int _masterProductEstimateSize(
   Map<Type, List<int>> allOffsets,
 ) {
   var bytesCount = offsets.last;
+  bytesCount += 3 + object.companions.length * 3;
+  {
+    final offsets = allOffsets[CompanionItem]!;
+    for (var i = 0; i < object.companions.length; i++) {
+      final value = object.companions[i];
+      bytesCount +=
+          CompanionItemSchema.estimateSize(value, offsets, allOffsets);
+    }
+  }
   {
     final value = object.defaultCategory;
     if (value != null) {
@@ -1994,12 +2022,20 @@ void _masterProductSerialize(
   List<int> offsets,
   Map<Type, List<int>> allOffsets,
 ) {
-  writer.writeString(offsets[0], object.defaultCategory);
-  writer.writeStringList(offsets[1], object.defaultShops);
-  writer.writeString(offsets[2], object.emoji);
-  writer.writeString(offsets[3], object.name);
+  writer.writeObjectList<CompanionItem>(
+    offsets[0],
+    allOffsets,
+    CompanionItemSchema.serialize,
+    object.companions,
+  );
+  writer.writeLong(offsets[1], object.cycleDays);
+  writer.writeString(offsets[2], object.defaultCategory);
+  writer.writeStringList(offsets[3], object.defaultShops);
+  writer.writeString(offsets[4], object.emoji);
+  writer.writeDateTime(offsets[5], object.lastPurchasedAt);
+  writer.writeString(offsets[6], object.name);
   writer.writeObjectList<ShopHabit>(
-    offsets[4],
+    offsets[7],
     allOffsets,
     ShopHabitSchema.serialize,
     object.shopHabits,
@@ -2013,13 +2049,22 @@ MasterProduct _masterProductDeserialize(
   Map<Type, List<int>> allOffsets,
 ) {
   final object = MasterProduct();
-  object.defaultCategory = reader.readStringOrNull(offsets[0]);
-  object.defaultShops = reader.readStringList(offsets[1]) ?? [];
-  object.emoji = reader.readStringOrNull(offsets[2]);
+  object.companions = reader.readObjectList<CompanionItem>(
+        offsets[0],
+        CompanionItemSchema.deserialize,
+        allOffsets,
+        CompanionItem(),
+      ) ??
+      [];
+  object.cycleDays = reader.readLong(offsets[1]);
+  object.defaultCategory = reader.readStringOrNull(offsets[2]);
+  object.defaultShops = reader.readStringList(offsets[3]) ?? [];
+  object.emoji = reader.readStringOrNull(offsets[4]);
   object.id = id;
-  object.name = reader.readString(offsets[3]);
+  object.lastPurchasedAt = reader.readDateTimeOrNull(offsets[5]);
+  object.name = reader.readString(offsets[6]);
   object.shopHabits = reader.readObjectList<ShopHabit>(
-        offsets[4],
+        offsets[7],
         ShopHabitSchema.deserialize,
         allOffsets,
         ShopHabit(),
@@ -2036,14 +2081,26 @@ P _masterProductDeserializeProp<P>(
 ) {
   switch (propertyId) {
     case 0:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readObjectList<CompanionItem>(
+            offset,
+            CompanionItemSchema.deserialize,
+            allOffsets,
+            CompanionItem(),
+          ) ??
+          []) as P;
     case 1:
-      return (reader.readStringList(offset) ?? []) as P;
+      return (reader.readLong(offset)) as P;
     case 2:
       return (reader.readStringOrNull(offset)) as P;
     case 3:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringList(offset) ?? []) as P;
     case 4:
+      return (reader.readStringOrNull(offset)) as P;
+    case 5:
+      return (reader.readDateTimeOrNull(offset)) as P;
+    case 6:
+      return (reader.readString(offset)) as P;
+    case 7:
       return (reader.readObjectList<ShopHabit>(
             offset,
             ShopHabitSchema.deserialize,
@@ -2252,6 +2309,151 @@ extension MasterProductQueryWhere
 
 extension MasterProductQueryFilter
     on QueryBuilder<MasterProduct, MasterProduct, QFilterCondition> {
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      companionsLengthEqualTo(int length) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'companions',
+        length,
+        true,
+        length,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      companionsIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'companions',
+        0,
+        true,
+        0,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      companionsIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'companions',
+        0,
+        false,
+        999999,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      companionsLengthLessThan(
+    int length, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'companions',
+        0,
+        true,
+        length,
+        include,
+      );
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      companionsLengthGreaterThan(
+    int length, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'companions',
+        length,
+        include,
+        999999,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      companionsLengthBetween(
+    int lower,
+    int upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'companions',
+        lower,
+        includeLower,
+        upper,
+        includeUpper,
+      );
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      cycleDaysEqualTo(int value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'cycleDays',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      cycleDaysGreaterThan(
+    int value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'cycleDays',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      cycleDaysLessThan(
+    int value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'cycleDays',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      cycleDaysBetween(
+    int lower,
+    int upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'cycleDays',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
   QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
       defaultCategoryIsNull() {
     return QueryBuilder.apply(this, (query) {
@@ -2839,6 +3041,80 @@ extension MasterProductQueryFilter
     });
   }
 
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      lastPurchasedAtIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'lastPurchasedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      lastPurchasedAtIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'lastPurchasedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      lastPurchasedAtEqualTo(DateTime? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'lastPurchasedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      lastPurchasedAtGreaterThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'lastPurchasedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      lastPurchasedAtLessThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'lastPurchasedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      lastPurchasedAtBetween(
+    DateTime? lower,
+    DateTime? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'lastPurchasedAt',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
   QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition> nameEqualTo(
     String value, {
     bool caseSensitive = true,
@@ -3067,6 +3343,13 @@ extension MasterProductQueryFilter
 extension MasterProductQueryObject
     on QueryBuilder<MasterProduct, MasterProduct, QFilterCondition> {
   QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      companionsElement(FilterQuery<CompanionItem> q) {
+    return QueryBuilder.apply(this, (query) {
+      return query.object(q, r'companions');
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
       shopHabitsElement(FilterQuery<ShopHabit> q) {
     return QueryBuilder.apply(this, (query) {
       return query.object(q, r'shopHabits');
@@ -3079,6 +3362,19 @@ extension MasterProductQueryLinks
 
 extension MasterProductQuerySortBy
     on QueryBuilder<MasterProduct, MasterProduct, QSortBy> {
+  QueryBuilder<MasterProduct, MasterProduct, QAfterSortBy> sortByCycleDays() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'cycleDays', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterSortBy>
+      sortByCycleDaysDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'cycleDays', Sort.desc);
+    });
+  }
+
   QueryBuilder<MasterProduct, MasterProduct, QAfterSortBy>
       sortByDefaultCategory() {
     return QueryBuilder.apply(this, (query) {
@@ -3105,6 +3401,20 @@ extension MasterProductQuerySortBy
     });
   }
 
+  QueryBuilder<MasterProduct, MasterProduct, QAfterSortBy>
+      sortByLastPurchasedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastPurchasedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterSortBy>
+      sortByLastPurchasedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastPurchasedAt', Sort.desc);
+    });
+  }
+
   QueryBuilder<MasterProduct, MasterProduct, QAfterSortBy> sortByName() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'name', Sort.asc);
@@ -3120,6 +3430,19 @@ extension MasterProductQuerySortBy
 
 extension MasterProductQuerySortThenBy
     on QueryBuilder<MasterProduct, MasterProduct, QSortThenBy> {
+  QueryBuilder<MasterProduct, MasterProduct, QAfterSortBy> thenByCycleDays() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'cycleDays', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterSortBy>
+      thenByCycleDaysDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'cycleDays', Sort.desc);
+    });
+  }
+
   QueryBuilder<MasterProduct, MasterProduct, QAfterSortBy>
       thenByDefaultCategory() {
     return QueryBuilder.apply(this, (query) {
@@ -3158,6 +3481,20 @@ extension MasterProductQuerySortThenBy
     });
   }
 
+  QueryBuilder<MasterProduct, MasterProduct, QAfterSortBy>
+      thenByLastPurchasedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastPurchasedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterSortBy>
+      thenByLastPurchasedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastPurchasedAt', Sort.desc);
+    });
+  }
+
   QueryBuilder<MasterProduct, MasterProduct, QAfterSortBy> thenByName() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'name', Sort.asc);
@@ -3173,6 +3510,12 @@ extension MasterProductQuerySortThenBy
 
 extension MasterProductQueryWhereDistinct
     on QueryBuilder<MasterProduct, MasterProduct, QDistinct> {
+  QueryBuilder<MasterProduct, MasterProduct, QDistinct> distinctByCycleDays() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'cycleDays');
+    });
+  }
+
   QueryBuilder<MasterProduct, MasterProduct, QDistinct>
       distinctByDefaultCategory({bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
@@ -3195,6 +3538,13 @@ extension MasterProductQueryWhereDistinct
     });
   }
 
+  QueryBuilder<MasterProduct, MasterProduct, QDistinct>
+      distinctByLastPurchasedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'lastPurchasedAt');
+    });
+  }
+
   QueryBuilder<MasterProduct, MasterProduct, QDistinct> distinctByName(
       {bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
@@ -3208,6 +3558,19 @@ extension MasterProductQueryProperty
   QueryBuilder<MasterProduct, int, QQueryOperations> idProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'id');
+    });
+  }
+
+  QueryBuilder<MasterProduct, List<CompanionItem>, QQueryOperations>
+      companionsProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'companions');
+    });
+  }
+
+  QueryBuilder<MasterProduct, int, QQueryOperations> cycleDaysProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'cycleDays');
     });
   }
 
@@ -3228,6 +3591,13 @@ extension MasterProductQueryProperty
   QueryBuilder<MasterProduct, String?, QQueryOperations> emojiProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'emoji');
+    });
+  }
+
+  QueryBuilder<MasterProduct, DateTime?, QQueryOperations>
+      lastPurchasedAtProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'lastPurchasedAt');
     });
   }
 
@@ -4669,6 +5039,309 @@ extension ListItemQueryFilter
 
 extension ListItemQueryObject
     on QueryBuilder<ListItem, ListItem, QFilterCondition> {}
+
+// coverage:ignore-file
+// ignore_for_file: duplicate_ignore, non_constant_identifier_names, constant_identifier_names, invalid_use_of_protected_member, unnecessary_cast, prefer_const_constructors, lines_longer_than_80_chars, require_trailing_commas, inference_failure_on_function_invocation, unnecessary_parenthesis, unnecessary_raw_strings, unnecessary_null_checks, join_return_with_assignment, prefer_final_locals, avoid_js_rounded_ints, avoid_positional_boolean_parameters, always_specify_types
+
+const CompanionItemSchema = Schema(
+  name: r'CompanionItem',
+  id: -8072173280814133115,
+  properties: {
+    r'productName': PropertySchema(
+      id: 0,
+      name: r'productName',
+      type: IsarType.string,
+    ),
+    r'weight': PropertySchema(
+      id: 1,
+      name: r'weight',
+      type: IsarType.double,
+    )
+  },
+  estimateSize: _companionItemEstimateSize,
+  serialize: _companionItemSerialize,
+  deserialize: _companionItemDeserialize,
+  deserializeProp: _companionItemDeserializeProp,
+);
+
+int _companionItemEstimateSize(
+  CompanionItem object,
+  List<int> offsets,
+  Map<Type, List<int>> allOffsets,
+) {
+  var bytesCount = offsets.last;
+  {
+    final value = object.productName;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  return bytesCount;
+}
+
+void _companionItemSerialize(
+  CompanionItem object,
+  IsarWriter writer,
+  List<int> offsets,
+  Map<Type, List<int>> allOffsets,
+) {
+  writer.writeString(offsets[0], object.productName);
+  writer.writeDouble(offsets[1], object.weight);
+}
+
+CompanionItem _companionItemDeserialize(
+  Id id,
+  IsarReader reader,
+  List<int> offsets,
+  Map<Type, List<int>> allOffsets,
+) {
+  final object = CompanionItem();
+  object.productName = reader.readStringOrNull(offsets[0]);
+  object.weight = reader.readDouble(offsets[1]);
+  return object;
+}
+
+P _companionItemDeserializeProp<P>(
+  IsarReader reader,
+  int propertyId,
+  int offset,
+  Map<Type, List<int>> allOffsets,
+) {
+  switch (propertyId) {
+    case 0:
+      return (reader.readStringOrNull(offset)) as P;
+    case 1:
+      return (reader.readDouble(offset)) as P;
+    default:
+      throw IsarError('Unknown property with id $propertyId');
+  }
+}
+
+extension CompanionItemQueryFilter
+    on QueryBuilder<CompanionItem, CompanionItem, QFilterCondition> {
+  QueryBuilder<CompanionItem, CompanionItem, QAfterFilterCondition>
+      productNameIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'productName',
+      ));
+    });
+  }
+
+  QueryBuilder<CompanionItem, CompanionItem, QAfterFilterCondition>
+      productNameIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'productName',
+      ));
+    });
+  }
+
+  QueryBuilder<CompanionItem, CompanionItem, QAfterFilterCondition>
+      productNameEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'productName',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<CompanionItem, CompanionItem, QAfterFilterCondition>
+      productNameGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'productName',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<CompanionItem, CompanionItem, QAfterFilterCondition>
+      productNameLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'productName',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<CompanionItem, CompanionItem, QAfterFilterCondition>
+      productNameBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'productName',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<CompanionItem, CompanionItem, QAfterFilterCondition>
+      productNameStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'productName',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<CompanionItem, CompanionItem, QAfterFilterCondition>
+      productNameEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'productName',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<CompanionItem, CompanionItem, QAfterFilterCondition>
+      productNameContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'productName',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<CompanionItem, CompanionItem, QAfterFilterCondition>
+      productNameMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'productName',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<CompanionItem, CompanionItem, QAfterFilterCondition>
+      productNameIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'productName',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<CompanionItem, CompanionItem, QAfterFilterCondition>
+      productNameIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'productName',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<CompanionItem, CompanionItem, QAfterFilterCondition>
+      weightEqualTo(
+    double value, {
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'weight',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<CompanionItem, CompanionItem, QAfterFilterCondition>
+      weightGreaterThan(
+    double value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'weight',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<CompanionItem, CompanionItem, QAfterFilterCondition>
+      weightLessThan(
+    double value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'weight',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<CompanionItem, CompanionItem, QAfterFilterCondition>
+      weightBetween(
+    double lower,
+    double upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'weight',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        epsilon: epsilon,
+      ));
+    });
+  }
+}
+
+extension CompanionItemQueryObject
+    on QueryBuilder<CompanionItem, CompanionItem, QFilterCondition> {}
 
 // coverage:ignore-file
 // ignore_for_file: duplicate_ignore, non_constant_identifier_names, constant_identifier_names, invalid_use_of_protected_member, unnecessary_cast, prefer_const_constructors, lines_longer_than_80_chars, require_trailing_commas, inference_failure_on_function_invocation, unnecessary_parenthesis, unnecessary_raw_strings, unnecessary_null_checks, join_return_with_assignment, prefer_final_locals, avoid_js_rounded_ints, avoid_positional_boolean_parameters, always_specify_types

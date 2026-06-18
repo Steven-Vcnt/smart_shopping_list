@@ -3,8 +3,8 @@ import 'package:flutter/foundation.dart';
 import 'package:isar/isar.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'models/database_models.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'models/database_models.dart';
 
 enum SyncState { offline, syncing, synced, error }
 
@@ -16,13 +16,14 @@ class SyncService {
   final ValueNotifier<SyncState> syncState = ValueNotifier(SyncState.offline);
   
   StreamSubscription? _connectivitySub;
+  StreamSubscription? _authSub;
 
   SyncService(this.isar) {
-    _initNetworkListener();
+    _initListeners();
   }
 
-  void _initNetworkListener() {
-    // Listen for internet connection changes
+  void _initListeners() {
+    // 1. Listen for internet connection changes
     _connectivitySub = Connectivity().onConnectivityChanged.listen((List<ConnectivityResult> results) {
       if (!results.contains(ConnectivityResult.none)) {
         syncNow();
@@ -31,6 +32,16 @@ class SyncService {
       }
     });
     
+    // 2. Listen for Auth changes (Fixes Bug #1: Race Condition)
+    // This fires immediately when the user is confirmed logged in on startup.
+    _authSub = FirebaseAuth.instance.authStateChanges().listen((User? user) {
+      if (user != null) {
+        syncNow();
+      } else {
+        syncState.value = SyncState.offline; // Reset state if user logs out
+      }
+    });
+
     // Attempt an initial sync on startup
     syncNow();
   }
@@ -42,10 +53,7 @@ class SyncService {
       return; 
     }
 
-    // 2. Proceed with sync only if user exists
-    await _pushLocalChangesToCloud();
-
-    // 1. Check if we actually have internet before trying
+    // 1. Check if we actually have internet before trying to push/pull
     final connectivityResults = await Connectivity().checkConnectivity();
     if (connectivityResults.contains(ConnectivityResult.none)) {
       syncState.value = SyncState.offline;
@@ -55,6 +63,7 @@ class SyncService {
     try {
       syncState.value = SyncState.syncing;
       
+      // 2. Proceed with sync safely
       await _pushLocalChangesToCloud();
       await _pullCloudChangesToLocal();
 
@@ -92,15 +101,14 @@ class SyncService {
         }).toList();
 
         // Get the currently logged-in Google User
-     final currentUser = FirebaseAuth.instance.currentUser;
+        final currentUser = FirebaseAuth.instance.currentUser;
 
-     batch.set(docRef, {
+        batch.set(docRef, {
           'name': list.name,
           'type': list.type.name,
           'lastModified': list.lastModified.toIso8601String(),
           'ownerEmail': currentUser?.email ?? 'anonymous',
           'ownerUid': currentUser?.uid ?? 'unknown',
-          // NEW: Push the shared emails to the cloud!
           'sharedWith': list.sharedWith, 
           'items': itemsJson,
         }, SetOptions(merge: true));
@@ -117,7 +125,18 @@ class SyncService {
 
   // --- PULL: Cloud to Local ---
   Future<void> _pullCloudChangesToLocal() async {
-    final snapshot = await _firestore.collection('shared_lists').get();
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null || user.email == null) return;
+
+    // Fixes Bug #2: Use Filter.or to pull lists we own AND lists shared with us
+    final snapshot = await _firestore.collection('shared_lists')
+        .where(
+          Filter.or(
+            Filter('ownerEmail', isEqualTo: user.email),
+            Filter('sharedWith', arrayContains: user.email),
+          ),
+        )
+        .get();
 
     for (var doc in snapshot.docs) {
       final cloudData = doc.data();
@@ -138,6 +157,8 @@ class SyncService {
           ..defaultShops = List<String>.from(itemMap['defaultShops'] ?? [])
         ).toList();
 
+        await _learnEmojisFromCloud(parsedItems);
+        
         final updatedList = localList ?? SmartList()
           ..firebaseId = doc.id
           ..name = cloudData['name']
@@ -149,6 +170,7 @@ class SyncService {
 
         await isar.writeTxn(() async {
           await isar.smartLists.put(updatedList);
+        
         });
       }
     }
@@ -156,6 +178,31 @@ class SyncService {
 
   void dispose() {
     _connectivitySub?.cancel();
+    _authSub?.cancel(); // Don't forget to cancel our new auth listener to prevent memory leaks!
     syncState.dispose();
+  }
+
+  Future<void> _learnEmojisFromCloud(List<ListItem> cloudItems) async {
+    await isar.writeTxn(() async {
+      for (var item in cloudItems) {
+        if (item.name != null && item.emoji != null && item.emoji != '🛒') {
+          // Check if we have this product locally
+          final master = await isar.masterProducts.where().nameEqualTo(item.name!).findFirst();
+          
+          if (master != null && master.emoji != item.emoji) {
+            // Our partner used a different/better emoji! Let's learn it.
+            master.emoji = item.emoji;
+            await isar.masterProducts.put(master);
+          } else if (master == null) {
+            // Our partner added a totally new item we've never seen! Let's save it.
+            final newMaster = MasterProduct()
+              ..name = item.name!
+              ..emoji = item.emoji!
+              ..defaultShops = [];
+            await isar.masterProducts.put(newMaster);
+          }
+        }
+      }
+    });
   }
 }

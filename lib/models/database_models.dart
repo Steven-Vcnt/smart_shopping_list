@@ -65,6 +65,18 @@ class MasterProduct {
   List<String> defaultShops = []; 
 
   List<ShopHabit> shopHabits = [];
+
+  // --- NEW: PREDICTIVE INTELLIGENCE FIELDS ---
+  int cycleDays = 14;           // How often user buys this (default 2 weeks)
+  DateTime? lastPurchasedAt;    // Used to calculate the urgency score
+  List<CompanionItem> companions = []; // Used to suggest paired items
+}
+
+// --- NEW: COMPANION MODEL FOR SUGGESTIONS ---
+@embedded
+class CompanionItem {
+  String? productName;
+  double weight = 0.0; // Probability (0.0 to 1.0)
 }
 
 @embedded
