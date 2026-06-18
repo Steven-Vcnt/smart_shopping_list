@@ -1937,6 +1937,12 @@ const MasterProductSchema = CollectionSchema(
       name: r'shopHabits',
       type: IsarType.objectList,
       target: r'ShopHabit',
+    ),
+    r'shopPositions': PropertySchema(
+      id: 8,
+      name: r'shopPositions',
+      type: IsarType.objectList,
+      target: r'ShopPosition',
     )
   },
   estimateSize: _masterProductEstimateSize,
@@ -1962,6 +1968,7 @@ const MasterProductSchema = CollectionSchema(
   links: {},
   embeddedSchemas: {
     r'ShopHabit': ShopHabitSchema,
+    r'ShopPosition': ShopPositionSchema,
     r'CompanionItem': CompanionItemSchema
   },
   getId: _masterProductGetId,
@@ -2013,6 +2020,14 @@ int _masterProductEstimateSize(
       bytesCount += ShopHabitSchema.estimateSize(value, offsets, allOffsets);
     }
   }
+  bytesCount += 3 + object.shopPositions.length * 3;
+  {
+    final offsets = allOffsets[ShopPosition]!;
+    for (var i = 0; i < object.shopPositions.length; i++) {
+      final value = object.shopPositions[i];
+      bytesCount += ShopPositionSchema.estimateSize(value, offsets, allOffsets);
+    }
+  }
   return bytesCount;
 }
 
@@ -2039,6 +2054,12 @@ void _masterProductSerialize(
     allOffsets,
     ShopHabitSchema.serialize,
     object.shopHabits,
+  );
+  writer.writeObjectList<ShopPosition>(
+    offsets[8],
+    allOffsets,
+    ShopPositionSchema.serialize,
+    object.shopPositions,
   );
 }
 
@@ -2068,6 +2089,13 @@ MasterProduct _masterProductDeserialize(
         ShopHabitSchema.deserialize,
         allOffsets,
         ShopHabit(),
+      ) ??
+      [];
+  object.shopPositions = reader.readObjectList<ShopPosition>(
+        offsets[8],
+        ShopPositionSchema.deserialize,
+        allOffsets,
+        ShopPosition(),
       ) ??
       [];
   return object;
@@ -2106,6 +2134,14 @@ P _masterProductDeserializeProp<P>(
             ShopHabitSchema.deserialize,
             allOffsets,
             ShopHabit(),
+          ) ??
+          []) as P;
+    case 8:
+      return (reader.readObjectList<ShopPosition>(
+            offset,
+            ShopPositionSchema.deserialize,
+            allOffsets,
+            ShopPosition(),
           ) ??
           []) as P;
     default:
@@ -3338,6 +3374,95 @@ extension MasterProductQueryFilter
       );
     });
   }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      shopPositionsLengthEqualTo(int length) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'shopPositions',
+        length,
+        true,
+        length,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      shopPositionsIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'shopPositions',
+        0,
+        true,
+        0,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      shopPositionsIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'shopPositions',
+        0,
+        false,
+        999999,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      shopPositionsLengthLessThan(
+    int length, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'shopPositions',
+        0,
+        true,
+        length,
+        include,
+      );
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      shopPositionsLengthGreaterThan(
+    int length, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'shopPositions',
+        length,
+        include,
+        999999,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      shopPositionsLengthBetween(
+    int lower,
+    int upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'shopPositions',
+        lower,
+        includeLower,
+        upper,
+        includeUpper,
+      );
+    });
+  }
 }
 
 extension MasterProductQueryObject
@@ -3353,6 +3478,13 @@ extension MasterProductQueryObject
       shopHabitsElement(FilterQuery<ShopHabit> q) {
     return QueryBuilder.apply(this, (query) {
       return query.object(q, r'shopHabits');
+    });
+  }
+
+  QueryBuilder<MasterProduct, MasterProduct, QAfterFilterCondition>
+      shopPositionsElement(FilterQuery<ShopPosition> q) {
+    return QueryBuilder.apply(this, (query) {
+      return query.object(q, r'shopPositions');
     });
   }
 }
@@ -3613,6 +3745,13 @@ extension MasterProductQueryProperty
       return query.addPropertyName(r'shopHabits');
     });
   }
+
+  QueryBuilder<MasterProduct, List<ShopPosition>, QQueryOperations>
+      shopPositionsProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'shopPositions');
+    });
+  }
 }
 
 // coverage:ignore-file
@@ -3626,10 +3765,25 @@ const UserShopSchema = CollectionSchema(
   name: r'UserShop',
   id: -98605192438099243,
   properties: {
-    r'name': PropertySchema(
+    r'lat': PropertySchema(
       id: 0,
+      name: r'lat',
+      type: IsarType.double,
+    ),
+    r'lng': PropertySchema(
+      id: 1,
+      name: r'lng',
+      type: IsarType.double,
+    ),
+    r'name': PropertySchema(
+      id: 2,
       name: r'name',
       type: IsarType.string,
+    ),
+    r'radius': PropertySchema(
+      id: 3,
+      name: r'radius',
+      type: IsarType.double,
     )
   },
   estimateSize: _userShopEstimateSize,
@@ -3676,7 +3830,10 @@ void _userShopSerialize(
   List<int> offsets,
   Map<Type, List<int>> allOffsets,
 ) {
-  writer.writeString(offsets[0], object.name);
+  writer.writeDouble(offsets[0], object.lat);
+  writer.writeDouble(offsets[1], object.lng);
+  writer.writeString(offsets[2], object.name);
+  writer.writeDouble(offsets[3], object.radius);
 }
 
 UserShop _userShopDeserialize(
@@ -3687,7 +3844,10 @@ UserShop _userShopDeserialize(
 ) {
   final object = UserShop();
   object.id = id;
-  object.name = reader.readString(offsets[0]);
+  object.lat = reader.readDoubleOrNull(offsets[0]);
+  object.lng = reader.readDoubleOrNull(offsets[1]);
+  object.name = reader.readString(offsets[2]);
+  object.radius = reader.readDouble(offsets[3]);
   return object;
 }
 
@@ -3699,7 +3859,13 @@ P _userShopDeserializeProp<P>(
 ) {
   switch (propertyId) {
     case 0:
+      return (reader.readDoubleOrNull(offset)) as P;
+    case 1:
+      return (reader.readDoubleOrNull(offset)) as P;
+    case 2:
       return (reader.readString(offset)) as P;
+    case 3:
+      return (reader.readDouble(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
   }
@@ -3944,6 +4110,162 @@ extension UserShopQueryFilter
     });
   }
 
+  QueryBuilder<UserShop, UserShop, QAfterFilterCondition> latIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'lat',
+      ));
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterFilterCondition> latIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'lat',
+      ));
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterFilterCondition> latEqualTo(
+    double? value, {
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'lat',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterFilterCondition> latGreaterThan(
+    double? value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'lat',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterFilterCondition> latLessThan(
+    double? value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'lat',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterFilterCondition> latBetween(
+    double? lower,
+    double? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'lat',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterFilterCondition> lngIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'lng',
+      ));
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterFilterCondition> lngIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'lng',
+      ));
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterFilterCondition> lngEqualTo(
+    double? value, {
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'lng',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterFilterCondition> lngGreaterThan(
+    double? value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'lng',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterFilterCondition> lngLessThan(
+    double? value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'lng',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterFilterCondition> lngBetween(
+    double? lower,
+    double? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'lng',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
   QueryBuilder<UserShop, UserShop, QAfterFilterCondition> nameEqualTo(
     String value, {
     bool caseSensitive = true,
@@ -4073,6 +4395,68 @@ extension UserShopQueryFilter
       ));
     });
   }
+
+  QueryBuilder<UserShop, UserShop, QAfterFilterCondition> radiusEqualTo(
+    double value, {
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'radius',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterFilterCondition> radiusGreaterThan(
+    double value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'radius',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterFilterCondition> radiusLessThan(
+    double value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'radius',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterFilterCondition> radiusBetween(
+    double lower,
+    double upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'radius',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        epsilon: epsilon,
+      ));
+    });
+  }
 }
 
 extension UserShopQueryObject
@@ -4082,6 +4466,30 @@ extension UserShopQueryLinks
     on QueryBuilder<UserShop, UserShop, QFilterCondition> {}
 
 extension UserShopQuerySortBy on QueryBuilder<UserShop, UserShop, QSortBy> {
+  QueryBuilder<UserShop, UserShop, QAfterSortBy> sortByLat() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lat', Sort.asc);
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterSortBy> sortByLatDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lat', Sort.desc);
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterSortBy> sortByLng() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lng', Sort.asc);
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterSortBy> sortByLngDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lng', Sort.desc);
+    });
+  }
+
   QueryBuilder<UserShop, UserShop, QAfterSortBy> sortByName() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'name', Sort.asc);
@@ -4091,6 +4499,18 @@ extension UserShopQuerySortBy on QueryBuilder<UserShop, UserShop, QSortBy> {
   QueryBuilder<UserShop, UserShop, QAfterSortBy> sortByNameDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'name', Sort.desc);
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterSortBy> sortByRadius() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'radius', Sort.asc);
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterSortBy> sortByRadiusDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'radius', Sort.desc);
     });
   }
 }
@@ -4109,6 +4529,30 @@ extension UserShopQuerySortThenBy
     });
   }
 
+  QueryBuilder<UserShop, UserShop, QAfterSortBy> thenByLat() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lat', Sort.asc);
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterSortBy> thenByLatDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lat', Sort.desc);
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterSortBy> thenByLng() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lng', Sort.asc);
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterSortBy> thenByLngDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lng', Sort.desc);
+    });
+  }
+
   QueryBuilder<UserShop, UserShop, QAfterSortBy> thenByName() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'name', Sort.asc);
@@ -4120,14 +4564,44 @@ extension UserShopQuerySortThenBy
       return query.addSortBy(r'name', Sort.desc);
     });
   }
+
+  QueryBuilder<UserShop, UserShop, QAfterSortBy> thenByRadius() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'radius', Sort.asc);
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QAfterSortBy> thenByRadiusDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'radius', Sort.desc);
+    });
+  }
 }
 
 extension UserShopQueryWhereDistinct
     on QueryBuilder<UserShop, UserShop, QDistinct> {
+  QueryBuilder<UserShop, UserShop, QDistinct> distinctByLat() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'lat');
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QDistinct> distinctByLng() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'lng');
+    });
+  }
+
   QueryBuilder<UserShop, UserShop, QDistinct> distinctByName(
       {bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'name', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<UserShop, UserShop, QDistinct> distinctByRadius() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'radius');
     });
   }
 }
@@ -4140,9 +4614,27 @@ extension UserShopQueryProperty
     });
   }
 
+  QueryBuilder<UserShop, double?, QQueryOperations> latProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'lat');
+    });
+  }
+
+  QueryBuilder<UserShop, double?, QQueryOperations> lngProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'lng');
+    });
+  }
+
   QueryBuilder<UserShop, String, QQueryOperations> nameProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'name');
+    });
+  }
+
+  QueryBuilder<UserShop, double, QQueryOperations> radiusProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'radius');
     });
   }
 }
@@ -5626,3 +6118,306 @@ extension ShopHabitQueryFilter
 
 extension ShopHabitQueryObject
     on QueryBuilder<ShopHabit, ShopHabit, QFilterCondition> {}
+
+// coverage:ignore-file
+// ignore_for_file: duplicate_ignore, non_constant_identifier_names, constant_identifier_names, invalid_use_of_protected_member, unnecessary_cast, prefer_const_constructors, lines_longer_than_80_chars, require_trailing_commas, inference_failure_on_function_invocation, unnecessary_parenthesis, unnecessary_raw_strings, unnecessary_null_checks, join_return_with_assignment, prefer_final_locals, avoid_js_rounded_ints, avoid_positional_boolean_parameters, always_specify_types
+
+const ShopPositionSchema = Schema(
+  name: r'ShopPosition',
+  id: 3247732560446408607,
+  properties: {
+    r'aisleOrder': PropertySchema(
+      id: 0,
+      name: r'aisleOrder',
+      type: IsarType.double,
+    ),
+    r'shopName': PropertySchema(
+      id: 1,
+      name: r'shopName',
+      type: IsarType.string,
+    )
+  },
+  estimateSize: _shopPositionEstimateSize,
+  serialize: _shopPositionSerialize,
+  deserialize: _shopPositionDeserialize,
+  deserializeProp: _shopPositionDeserializeProp,
+);
+
+int _shopPositionEstimateSize(
+  ShopPosition object,
+  List<int> offsets,
+  Map<Type, List<int>> allOffsets,
+) {
+  var bytesCount = offsets.last;
+  {
+    final value = object.shopName;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  return bytesCount;
+}
+
+void _shopPositionSerialize(
+  ShopPosition object,
+  IsarWriter writer,
+  List<int> offsets,
+  Map<Type, List<int>> allOffsets,
+) {
+  writer.writeDouble(offsets[0], object.aisleOrder);
+  writer.writeString(offsets[1], object.shopName);
+}
+
+ShopPosition _shopPositionDeserialize(
+  Id id,
+  IsarReader reader,
+  List<int> offsets,
+  Map<Type, List<int>> allOffsets,
+) {
+  final object = ShopPosition();
+  object.aisleOrder = reader.readDouble(offsets[0]);
+  object.shopName = reader.readStringOrNull(offsets[1]);
+  return object;
+}
+
+P _shopPositionDeserializeProp<P>(
+  IsarReader reader,
+  int propertyId,
+  int offset,
+  Map<Type, List<int>> allOffsets,
+) {
+  switch (propertyId) {
+    case 0:
+      return (reader.readDouble(offset)) as P;
+    case 1:
+      return (reader.readStringOrNull(offset)) as P;
+    default:
+      throw IsarError('Unknown property with id $propertyId');
+  }
+}
+
+extension ShopPositionQueryFilter
+    on QueryBuilder<ShopPosition, ShopPosition, QFilterCondition> {
+  QueryBuilder<ShopPosition, ShopPosition, QAfterFilterCondition>
+      aisleOrderEqualTo(
+    double value, {
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'aisleOrder',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<ShopPosition, ShopPosition, QAfterFilterCondition>
+      aisleOrderGreaterThan(
+    double value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'aisleOrder',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<ShopPosition, ShopPosition, QAfterFilterCondition>
+      aisleOrderLessThan(
+    double value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'aisleOrder',
+        value: value,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<ShopPosition, ShopPosition, QAfterFilterCondition>
+      aisleOrderBetween(
+    double lower,
+    double upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'aisleOrder',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<ShopPosition, ShopPosition, QAfterFilterCondition>
+      shopNameIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'shopName',
+      ));
+    });
+  }
+
+  QueryBuilder<ShopPosition, ShopPosition, QAfterFilterCondition>
+      shopNameIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'shopName',
+      ));
+    });
+  }
+
+  QueryBuilder<ShopPosition, ShopPosition, QAfterFilterCondition>
+      shopNameEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'shopName',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ShopPosition, ShopPosition, QAfterFilterCondition>
+      shopNameGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'shopName',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ShopPosition, ShopPosition, QAfterFilterCondition>
+      shopNameLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'shopName',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ShopPosition, ShopPosition, QAfterFilterCondition>
+      shopNameBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'shopName',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ShopPosition, ShopPosition, QAfterFilterCondition>
+      shopNameStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'shopName',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ShopPosition, ShopPosition, QAfterFilterCondition>
+      shopNameEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'shopName',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ShopPosition, ShopPosition, QAfterFilterCondition>
+      shopNameContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'shopName',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ShopPosition, ShopPosition, QAfterFilterCondition>
+      shopNameMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'shopName',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ShopPosition, ShopPosition, QAfterFilterCondition>
+      shopNameIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'shopName',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<ShopPosition, ShopPosition, QAfterFilterCondition>
+      shopNameIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'shopName',
+        value: '',
+      ));
+    });
+  }
+}
+
+extension ShopPositionQueryObject
+    on QueryBuilder<ShopPosition, ShopPosition, QFilterCondition> {}

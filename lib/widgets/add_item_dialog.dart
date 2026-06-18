@@ -34,7 +34,7 @@ class _AddItemDialogState extends State<AddItemDialog> {
   final TextEditingController _qtyController = TextEditingController(text: '1');
   
   List<UserShop> _availableShops = [];
-  List<String> _selectedShops = []; 
+  final List<String> _selectedShops = []; 
   
   // 2. NEW: Updated state variables for smart search
   List<GrocerySuggestion> _suggestions = [];
@@ -90,7 +90,7 @@ class _AddItemDialogState extends State<AddItemDialog> {
     
     for (var r in historyResults) {
       combinedResults.add(GrocerySuggestion(
-        name: r.name ?? '',
+        name: r.name,
         emoji: r.emoji,
         defaultShops: r.defaultShops,
         isFromHistory: true,
@@ -191,8 +191,11 @@ class _AddItemDialogState extends State<AddItemDialog> {
                     selected: isSelected,
                     onSelected: (selected) {
                       setState(() {
-                        if (selected) _selectedShops.add(shop.name);
-                        else _selectedShops.remove(shop.name);
+                        if (selected) {
+                          _selectedShops.add(shop.name);
+                        } else {
+                          _selectedShops.remove(shop.name);
+                        }
                       });
                     },
                     visualDensity: VisualDensity.compact,

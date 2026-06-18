@@ -65,6 +65,9 @@ class MasterProduct {
   List<String> defaultShops = []; 
 
   List<ShopHabit> shopHabits = [];
+  
+  // --- NEW: SPATIAL LEARNING FIELDS ---
+  List<ShopPosition> shopPositions = [];
 
   // --- NEW: PREDICTIVE INTELLIGENCE FIELDS ---
   int cycleDays = 14;           // How often user buys this (default 2 weeks)
@@ -85,6 +88,13 @@ class ShopHabit {
   int count = 0;
 }
 
+// --- NEW: SHOP POSITION FOR ROUTING ---
+@embedded
+class ShopPosition {
+  String? shopName;
+  double aisleOrder = 99.0; // Default to end of list
+}
+
 // --- DYNAMIC SHOP MODEL ---
 
 @collection
@@ -93,4 +103,9 @@ class UserShop {
 
   @Index(unique: true, replace: true)
   late String name;
+
+  // --- NEW: GEOFENCING FIELDS ---
+  double? lat;
+  double? lng;
+  double radius = 50.0; // Default 50m radius
 }

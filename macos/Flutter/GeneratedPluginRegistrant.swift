@@ -10,8 +10,10 @@ import connectivity_plus
 import emoji_picker_flutter
 import firebase_auth
 import firebase_core
+import geolocator_apple
 import google_sign_in_ios
 import isar_flutter_libs
+import package_info_plus
 import share_plus
 import shared_preferences_foundation
 
@@ -21,8 +23,10 @@ func RegisterGeneratedPlugins(registry: FlutterPluginRegistry) {
   EmojiPickerFlutterPlugin.register(with: registry.registrar(forPlugin: "EmojiPickerFlutterPlugin"))
   FLTFirebaseAuthPlugin.register(with: registry.registrar(forPlugin: "FLTFirebaseAuthPlugin"))
   FLTFirebaseCorePlugin.register(with: registry.registrar(forPlugin: "FLTFirebaseCorePlugin"))
+  GeolocatorPlugin.register(with: registry.registrar(forPlugin: "GeolocatorPlugin"))
   FLTGoogleSignInPlugin.register(with: registry.registrar(forPlugin: "FLTGoogleSignInPlugin"))
   IsarFlutterLibsPlugin.register(with: registry.registrar(forPlugin: "IsarFlutterLibsPlugin"))
+  FPPPackageInfoPlusPlugin.register(with: registry.registrar(forPlugin: "FPPPackageInfoPlusPlugin"))
   SharePlusMacosPlugin.register(with: registry.registrar(forPlugin: "SharePlusMacosPlugin"))
   SharedPreferencesPlugin.register(with: registry.registrar(forPlugin: "SharedPreferencesPlugin"))
 }

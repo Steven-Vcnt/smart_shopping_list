@@ -8,6 +8,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   emoji_picker_flutter
   firebase_auth
   firebase_core
+  geolocator_windows
   isar_flutter_libs
   share_plus
   url_launcher_windows

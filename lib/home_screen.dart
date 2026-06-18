@@ -37,6 +37,7 @@ class _HomeScreenState extends State<HomeScreen> {
   // Fetch all lists from the database, sorted by most recently modified
   Future<void> _loadLists() async {
     final lists = await widget.isar.smartLists.where().sortByLastModifiedDesc().findAll();
+    if (!mounted) return;
     setState(() {
       _lists = lists;
       _isLoading = false;
@@ -48,6 +49,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await widget.isar.writeTxn(() async {
       await widget.isar.smartLists.delete(list.id);
     });
+    if (!mounted) return;
     _loadLists();
   }
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:isar/isar.dart';
+import 'package:geolocator/geolocator.dart';
 import 'models/database_models.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -68,6 +69,72 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('${shop.name} deleted')),
+      );
+    }
+    _loadShops();
+  }
+
+  /// Grabs the user's current GPS position and saves it as the geofence center.
+  Future<void> _pinShopLocation(UserShop shop) async {
+    // 1. Request permission if needed
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Location permission denied.')));
+        return;
+      }
+    }
+    if (permission == LocationPermission.deniedForever) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Location permission permanently denied. Please enable in Settings.')));
+      return;
+    }
+
+    // 2. Show loading feedback
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('📍 Pinning location for ${shop.name}...')));
+
+    try {
+      // 3. Get current position
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+      );
+
+      // 4. Save to Isar
+      await widget.isar.writeTxn(() async {
+        shop.lat = pos.latitude;
+        shop.lng = pos.longitude;
+        shop.radius = 80.0; // 80m geofence radius — good for a supermarket car park
+        await widget.isar.userShops.put(shop);
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✅ ${shop.name} location pinned! (${pos.latitude.toStringAsFixed(4)}, ${pos.longitude.toStringAsFixed(4)})'),
+            backgroundColor: Colors.green.shade700,
+          ),
+        );
+      }
+      _loadShops();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not get location: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  /// Removes the pinned GPS location from a shop.
+  Future<void> _unpinShopLocation(UserShop shop) async {
+    await widget.isar.writeTxn(() async {
+      shop.lat = null;
+      shop.lng = null;
+      await widget.isar.userShops.put(shop);
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('📍 Location removed from ${shop.name}')),
       );
     }
     _loadShops();
@@ -159,13 +226,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     return Card(
                       child: ListTile(
                         leading: CircleAvatar(
-                          backgroundColor: Colors.blue.shade100,
-                          child: Icon(Icons.storefront, color: Colors.blue.shade800),
+                          backgroundColor: shop.lat != null
+                              ? Colors.green.shade50
+                              : Colors.blue.shade100,
+                          child: Icon(
+                            shop.lat != null ? Icons.location_on : Icons.storefront,
+                            color: shop.lat != null ? Colors.green.shade700 : Colors.blue.shade800,
+                          ),
                         ),
                         title: Text(shop.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: shop.lat != null
+                            ? Text(
+                                '📍 Geofence active',
+                                style: TextStyle(color: Colors.green.shade700, fontSize: 12),
+                              )
+                            : const Text(
+                                'No location pinned',
+                                style: TextStyle(color: Colors.grey, fontSize: 12),
+                              ),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
+                            // GPS pin/unpin button
+                            if (shop.lat != null)
+                              IconButton(
+                                icon: Icon(Icons.location_off, color: Colors.orange.shade700),
+                                tooltip: 'Remove geofence',
+                                onPressed: () => _unpinShopLocation(shop),
+                              )
+                            else
+                              IconButton(
+                                icon: Icon(Icons.my_location, color: Colors.green.shade700),
+                                tooltip: 'Pin my current location as this shop',
+                                onPressed: () => _pinShopLocation(shop),
+                              ),
                             IconButton(
                               icon: const Icon(Icons.edit, color: Colors.grey),
                               onPressed: () => _showShopDialog(existingShop: shop),

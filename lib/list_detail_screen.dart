@@ -1,13 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:isar/isar.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
-import 'package:share_plus/share_plus.dart';
 import 'models/database_models.dart';
 import 'widgets/add_item_dialog.dart';
 import 'widgets/smart_list_item_card.dart';
 import 'widgets/sync_banner.dart';
 import 'widgets/prediction_banner.dart';
+import 'widgets/shared_users_bottom_sheet.dart';
+import 'widgets/store_detection_banner.dart';
+import 'services/location_routing_service.dart';
 import 'sync_service.dart';
+import 'dart:async';
 
 class ListDetailScreen extends StatefulWidget {
   final Isar isar;
@@ -32,14 +35,156 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
   bool _isLoadingShops = true;
   int? _expandedItemIndex;
   
-  // --- NEW: Track the last checked item for our Undo button ---
+  // --- Spatial Routing & Heuristics ---
+  late LocationRoutingService _locationService;
+  
+  // FIX: Using the correct DetectedShop types from your routing service
+  StreamSubscription<DetectedShop?>? _shopSubscription;
+  UserShop? _detectedShop;       // Confirmed active shop (Local Database Model)
+  DetectedShop? _pendingShop;    // Detected but not yet confirmed by user (GPS Model)
+  
+  Map<String, double> _itemAisleOrders = {};
+  final List<String> _checkSequence = [];
+  
+  // --- Track the last checked item for our Undo button ---
   String? _lastCheckedItemName;
 
   @override
   void initState() {
     super.initState();
     _currentList = widget.smartList;
+    _locationService = LocationRoutingService(widget.isar);
+    _initLocationTracking();
     _loadShops();
+  }
+  
+  @override
+  void dispose() {
+    _shopSubscription?.cancel();
+    _locationService.stopTracking();
+    _processHeuristicsBatch();
+    super.dispose();
+  }
+
+  Future<void> _initLocationTracking() async {
+    await _locationService.startTracking();
+    _shopSubscription = _locationService.currentShopStream.listen((shop) async {
+      if (!mounted) return;
+      if (shop == null) {
+        // Left all known geofences — clear the confirmed shop silently
+        setState(() {
+          _detectedShop = null;
+          _pendingShop = null;
+        });
+        await _updateAisleOrdersAndSort();
+      } else if (shop.name != _detectedShop?.name) {
+        // FIX: Compare by .name instead of .id, and assign DetectedShop!
+        // Don't auto-confirm! Show the banner and let the user decide.
+        setState(() => _pendingShop = shop);
+      }
+    });
+  }
+
+  /// Called when user taps "Yes!" on the StoreDetectionBanner.
+  Future<void> _confirmDetectedShop(DetectedShop shop) async {
+    // FIX: Safely map the incoming GPS DetectedShop to our local UserShop database model
+    final matchedUserShop = _shops.firstWhere(
+      (s) => s.name == shop.name,
+      orElse: () => UserShop()..name = shop.name,
+    );
+
+    setState(() {
+      _pendingShop = null;
+      _detectedShop = matchedUserShop;
+      _activeTab = matchedUserShop.name;
+    });
+    await _updateAisleOrdersAndSort();
+  }
+
+  /// Called when user picks a different shop from the override picker.
+  Future<void> _overrideDetectedShop(UserShop shop) async {
+    setState(() {
+      _pendingShop = null;
+      _detectedShop = shop;
+      _activeTab = shop.name;
+    });
+    await _updateAisleOrdersAndSort();
+  }
+
+  /// Called when user taps "Change" → "I'm not in a store".
+  void _dismissDetection() {
+    setState(() {
+      _pendingShop = null;
+      _detectedShop = null;
+    });
+  }
+
+  Future<void> _updateAisleOrdersAndSort() async {
+    if (_detectedShop == null) {
+      _itemAisleOrders.clear();
+      await _sortList();
+      return;
+    }
+
+    final itemNames = _currentList.items.map((e) => e.name ?? '').toList();
+    final masters = await widget.isar.masterProducts.filter()
+      .anyOf(itemNames, (q, String name) => q.nameEqualTo(name)).findAll();
+    
+    Map<String, double> newAisleOrders = {};
+    for (var master in masters) {
+      final pos = master.shopPositions.firstWhere(
+        (p) => p.shopName == _detectedShop!.name,
+        orElse: () => ShopPosition()..shopName = _detectedShop!.name..aisleOrder = 99.0,
+      );
+      newAisleOrders[master.name] = pos.aisleOrder;
+    }
+
+    if (mounted) {
+      setState(() {
+        _itemAisleOrders = newAisleOrders;
+      });
+      await _sortList();
+    }
+  }
+
+  Future<void> _processHeuristicsBatch() async {
+    if (_detectedShop == null || _checkSequence.isEmpty) return;
+    
+    final shopName = _detectedShop!.name;
+    final List<String> sequence = List.from(_checkSequence);
+    
+    final masters = await widget.isar.masterProducts.filter()
+      .anyOf(sequence, (q, String name) => q.nameEqualTo(name)).findAll();
+    
+    if (masters.isEmpty) return;
+
+    await widget.isar.writeTxn(() async {
+      for (int i = 0; i < sequence.length; i++) {
+        final itemName = sequence[i];
+        final currentPosInSequence = (i + 1).toDouble(); 
+        
+        final masterIndex = masters.indexWhere((m) => m.name == itemName);
+        if (masterIndex == -1) continue;
+        
+        final master = masters[masterIndex];
+        
+        int posIndex = master.shopPositions.indexWhere((p) => p.shopName == shopName);
+        if (posIndex != -1) {
+          // EMA: alpha = 0.3
+          double oldOrder = master.shopPositions[posIndex].aisleOrder;
+          master.shopPositions[posIndex].aisleOrder = (0.3 * currentPosInSequence) + (0.7 * oldOrder);
+          master.shopPositions = List.from(master.shopPositions);
+        } else {
+          master.shopPositions = List.from(master.shopPositions)..add(
+            ShopPosition()
+              ..shopName = shopName
+              ..aisleOrder = currentPosInSequence
+          );
+        }
+        
+        await widget.isar.masterProducts.put(master);
+      }
+    });
   }
 
   Future<void> _sendToCart() async {
@@ -65,9 +210,9 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
           );
         }
       }
-      restockList!.items = updatedItems;
-      restockList!.lastModified = DateTime.now();
-      await widget.isar.smartLists.put(restockList!);
+      restockList.items = updatedItems;
+      restockList.lastModified = DateTime.now();
+      await widget.isar.smartLists.put(restockList);
     });
 
     if (mounted) {
@@ -90,6 +235,14 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
       _currentList.items.sort((a, b) {
         if (a.isChecked && !b.isChecked) return 1;
         if (!a.isChecked && b.isChecked) return -1;
+        
+        // --- NEW: Spatial Sorting based on Heuristics ---
+        if (_detectedShop != null && !a.isChecked && !b.isChecked) {
+          final aOrder = _itemAisleOrders[a.name] ?? 99.0;
+          final bOrder = _itemAisleOrders[b.name] ?? 99.0;
+          return aOrder.compareTo(bOrder);
+        }
+
         return 0; 
       });
       _expandedItemIndex = null;
@@ -107,50 +260,83 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
   }
 
   void _showShareDialog() {
-    final TextEditingController emailController = TextEditingController();
-
-    showDialog(
+    showModalBottomSheet(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Share List'),
-        content: Column(
+      isScrollControlled: true,
+      builder: (context) => SharedUsersBottomSheet(
+        currentList: _currentList,
+        onListUpdated: (updatedList) {
+          setState(() {});
+          _saveListState();
+        },
+      ),
+    );
+  }
+
+  Widget _buildSharedUsersAvatars() {
+    final List<String> allEmails = [];
+    if (_currentList.ownerEmail != null && _currentList.ownerEmail!.isNotEmpty) {
+      allEmails.add(_currentList.ownerEmail!);
+    }
+    allEmails.addAll(_currentList.sharedWith);
+    
+    if (allEmails.isEmpty) {
+      return IconButton(
+        icon: const Icon(Icons.person_add_alt_1),
+        tooltip: 'Share List',
+        onPressed: _showShareDialog,
+      );
+    }
+    
+    final displayEmails = allEmails.take(3).toList();
+    final extraCount = allEmails.length - displayEmails.length;
+    
+    return GestureDetector(
+      onTap: _showShareDialog,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16.0),
+        child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('Enter the Google email of the person you want to share this list with.'),
-            const SizedBox(height: 16),
-            TextField(
-              controller: emailController,
-              keyboardType: TextInputType.emailAddress,
-              decoration: const InputDecoration(
-                labelText: 'Email Address',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.email),
+            SizedBox(
+              width: (displayEmails.length * 20.0) + (extraCount > 0 ? 20.0 : 0.0) + 8.0,
+              height: 32,
+              child: Stack(
+                alignment: Alignment.centerLeft,
+                children: [
+                  for (int i = 0; i < displayEmails.length; i++)
+                    Positioned(
+                      left: i * 20.0,
+                      child: CircleAvatar(
+                        radius: 14,
+                        backgroundColor: i == 0 ? Colors.blue.shade100 : Colors.grey.shade200,
+                        child: Text(
+                          displayEmails[i][0].toUpperCase(),
+                          style: TextStyle(
+                            fontSize: 12, 
+                            fontWeight: FontWeight.bold,
+                            color: i == 0 ? Colors.blue.shade900 : Colors.grey.shade700,
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (extraCount > 0)
+                    Positioned(
+                      left: displayEmails.length * 20.0,
+                      child: CircleAvatar(
+                        radius: 14,
+                        backgroundColor: Colors.grey.shade300,
+                        child: Text(
+                          '+$extraCount',
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey.shade800),
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
           ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () {
-              final email = emailController.text.trim().toLowerCase();
-              if (email.isNotEmpty && email.contains('@')) {
-                setState(() {
-                  if (!_currentList.sharedWith.contains(email)) {
-                    _currentList.sharedWith.add(email);
-                  }
-                });
-                _saveListState(); 
-                Navigator.pop(context); 
-                
-                Share.share(
-                  'Hey! I just shared the "${_currentList.name}" list with you on Smart Grocery. Open the app to see it!',
-                );
-              }
-            },
-            child: const Text('Share'),
-          ),
-        ],
       ),
     );
   }
@@ -290,7 +476,6 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
     showDialog(context: context, builder: (context) => AddItemDialog(isar: widget.isar, onAdd: _addItem));
   }
 
-  // --- NEW: Toggle Logic mapped to AppBar Undo instead of SnackBar ---
   Future<void> _toggleItemCheck(int index, bool newValue) async {
     final item = _currentList.items[index];
     final itemName = item.name;
@@ -301,9 +486,17 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
       // If we check it off, save it as the "last checked" for the Undo button
       if (newValue == true) {
         _lastCheckedItemName = itemName;
+        // --- NEW: Record sequence ---
+        if (itemName != null && _detectedShop != null) {
+           _checkSequence.remove(itemName); 
+           _checkSequence.add(itemName);
+        }
       } else if (_lastCheckedItemName == itemName) {
         // If they manually uncheck the item they just checked, hide the undo button
         _lastCheckedItemName = null;
+        if (itemName != null) {
+           _checkSequence.remove(itemName);
+        }
       }
     });
     
@@ -315,10 +508,14 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
       final master = await widget.isar.masterProducts.where().nameEqualTo(itemName).findFirst();
       if (master != null) {
         await widget.isar.writeTxn(() async {
-          // CHEAT CODE FOR PREDICTION BANNER TESTING:
-          master.lastPurchasedAt = DateTime.now().subtract(const Duration(days: 12)); 
+          master.lastPurchasedAt = DateTime.now(); 
           await widget.isar.masterProducts.put(master);
         });
+        
+        // --- NEW: Trigger a rebuild AFTER the database update so PredictionBanner catches the new date!
+        if (mounted) {
+           setState(() {});
+        }
       }
     }
   }
@@ -372,11 +569,7 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
               onPressed: _undoLastCheck,
             ),
             
-          IconButton(
-            icon: const Icon(Icons.person_add_alt_1),
-            tooltip: 'Share List',
-            onPressed: _showShareDialog,
-          ),
+          _buildSharedUsersAvatars(),
           if (_currentList.type == ListType.reusable)
             IconButton(icon: const Icon(Icons.refresh), onPressed: () { setState(() { for (var item in _currentList.items) { item.isChecked = false; } _currentList.items = List.from(_currentList.items); }); _saveListState(); }),
         ],
@@ -385,6 +578,16 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
         children: [
           SyncBanner(syncService: widget.syncService),
           
+          // --- Store Detection Banner (shows when geofence fires, waits for user confirmation) ---
+          if (_pendingShop != null)
+            StoreDetectionBanner(
+              detectedShop: _pendingShop!,
+              allShops: _shops,
+              onConfirm: () => _confirmDetectedShop(_pendingShop!),
+              onOverride: _overrideDetectedShop,
+              onDismiss: _dismissDetection,
+            ),
+
           PredictionBanner(
             isar: widget.isar,
             currentItems: _currentList.items,
