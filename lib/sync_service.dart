@@ -12,7 +12,6 @@ class SyncService {
   final Isar isar;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   
-  // This lets our UI listen to the current status (for our top banner!)
   final ValueNotifier<SyncState> syncState = ValueNotifier(SyncState.offline);
   
   StreamSubscription? _connectivitySub;
@@ -23,7 +22,6 @@ class SyncService {
   }
 
   void _initListeners() {
-    // 1. Listen for internet connection changes
     _connectivitySub = Connectivity().onConnectivityChanged.listen((List<ConnectivityResult> results) {
       if (!results.contains(ConnectivityResult.none)) {
         syncNow();
@@ -32,124 +30,82 @@ class SyncService {
       }
     });
     
-    // 2. Listen for Auth changes (Fixes Bug #1: Race Condition)
-    // This fires immediately when the user is confirmed logged in on startup.
     _authSub = FirebaseAuth.instance.authStateChanges().listen((User? user) {
       if (user != null) {
         syncNow();
       } else {
-        syncState.value = SyncState.offline; // Reset state if user logs out
+        syncState.value = SyncState.offline; 
       }
     });
 
-    // Attempt an initial sync on startup
-    syncNow();
+    // Don't call syncNow() immediately on boot; let the Auth Listener trigger it once it confirms a user exists.
   }
 
   Future<void> syncNow() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
-      debugPrint("Sync skipped: No user logged in.");
+      debugPrint("Sync Aborted: User is null. Waiting for auth state change.");
       return; 
     }
 
-    // 1. Check if we actually have internet before trying to push/pull
-    final connectivityResults = await Connectivity().checkConnectivity();
-    if (connectivityResults.contains(ConnectivityResult.none)) {
-      syncState.value = SyncState.offline;
-      return;
-    }
+    // REMOVED the strict connectivity_plus blocker. 
+    // Firestore handles offline caching automatically. It's better to let Firestore 
+    // attempt the connection rather than blocking it manually.
 
     try {
       syncState.value = SyncState.syncing;
       
-      // 2. Proceed with sync safely
-      await _pushLocalChangesToCloud();
+      // PULL BEFORE PUSH!
       await _pullCloudChangesToLocal();
+      await _pushLocalChangesToCloud();
 
       syncState.value = SyncState.synced;
+      debugPrint("✅ Sync Completed Successfully");
     } catch (e) {
-      debugPrint('Sync Error: $e');
+      debugPrint('🔴 Sync Error Caught: $e');
       syncState.value = SyncState.error;
     }
   }
-
-  // --- PUSH: Local to Cloud ---
-  Future<void> _pushLocalChangesToCloud() async {
-    final localLists = await isar.smartLists.where().findAll();
-    final batch = _firestore.batch();
-
-    for (var list in localLists) {
-      // If it has never been synced, OR it was modified after the last sync
-      if (list.firebaseId == null || (list.lastSynced == null || list.lastModified.isAfter(list.lastSynced!))) {
-        
-        DocumentReference docRef;
-        if (list.firebaseId == null) {
-          docRef = _firestore.collection('shared_lists').doc(); // Generate new Cloud ID
-          list.firebaseId = docRef.id;
-        } else {
-          docRef = _firestore.collection('shared_lists').doc(list.firebaseId);
-        }
-
-        // Convert the ListItems to JSON for Firebase
-        final itemsJson = list.items.map((item) => {
-          'name': item.name,
-          'isChecked': item.isChecked,
-          'emoji': item.emoji,
-          'quantity': item.quantity,
-          'defaultShops': item.defaultShops,
-        }).toList();
-
-        // Get the currently logged-in Google User
-        final currentUser = FirebaseAuth.instance.currentUser;
-
-        batch.set(docRef, {
-          'name': list.name,
-          'type': list.type.name,
-          'lastModified': list.lastModified.toIso8601String(),
-          'ownerEmail': currentUser?.email ?? 'anonymous',
-          'ownerUid': currentUser?.uid ?? 'unknown',
-          'sharedWith': list.sharedWith, 
-          'items': itemsJson,
-        }, SetOptions(merge: true));
-
-        // Update local timestamp so we know it's synced
-        list.lastSynced = DateTime.now();
-        await isar.writeTxn(() async {
-          await isar.smartLists.put(list);
-        });
-      }
-    }
-    await batch.commit();
-  }
-
-  // --- PULL: Cloud to Local ---
-  Future<void> _pullCloudChangesToLocal() async {
+Future<void> _pullCloudChangesToLocal() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null || user.email == null) return;
 
-    // Fixes Bug #2: Use Filter.or to pull lists we own AND lists shared with us
-    final snapshot = await _firestore.collection('shared_lists')
-        .where(
-          Filter.or(
-            Filter('ownerEmail', isEqualTo: user.email),
-            Filter('sharedWith', arrayContains: user.email),
-          ),
-        )
-        .get();
+    try {
+      final snapshot = await _firestore.collection('shared_lists')
+          .where(
+            Filter.or(
+              Filter('ownerEmail', isEqualTo: user.email),
+              Filter('sharedWith', arrayContains: user.email),
+            ),
+          )
+          .get();
 
-    for (var doc in snapshot.docs) {
-      final cloudData = doc.data();
-      final cloudModified = DateTime.parse(cloudData['lastModified']);
+      final localSyncedLists = await isar.smartLists.filter().firebaseIdIsNotNull().findAll();
+      final Set<String> activeCloudIds = snapshot.docs.map((doc) => doc.id).toSet();
       
-      // Find if we already have this list locally
-      var localList = await isar.smartLists.where().firebaseIdEqualTo(doc.id).findFirst();
+      // We will collect all lists to delete and update, then do ONE database transaction.
+      List<int> listIdsToDelete = [];
+      List<SmartList> listsToUpdate = [];
+      List<ListItem> allCloudItemsToLearn = []; // For batching the emoji learning
 
-      // If we don't have it, or the cloud version is newer than ours
-      if (localList == null || localList.lastModified.isBefore(cloudModified)) {
+      for (var localList in localSyncedLists) {
+         if (!activeCloudIds.contains(localList.firebaseId)) {
+            listIdsToDelete.add(localList.id);
+         }
+      }
+
+      for (var doc in snapshot.docs) {
+        final cloudData = doc.data();
+        if (cloudData['lastModified'] == null) continue;
         
+        final cloudModified = DateTime.parse(cloudData['lastModified']).toUtc();
+        
+        // Find the local list IN MEMORY (Lightning fast!)
+        final localListIndex = localSyncedLists.indexWhere((l) => l.firebaseId == doc.id);
+        SmartList? localList = localListIndex != -1 ? localSyncedLists[localListIndex] : null;
+
         final List<dynamic> itemsData = cloudData['items'] ?? [];
-        final parsedItems = itemsData.map((itemMap) => ListItem()
+        final cloudItems = itemsData.map((itemMap) => ListItem()
           ..name = itemMap['name']
           ..isChecked = itemMap['isChecked'] ?? false
           ..emoji = itemMap['emoji']
@@ -157,52 +113,179 @@ class SyncService {
           ..defaultShops = List<String>.from(itemMap['defaultShops'] ?? [])
         ).toList();
 
-        await _learnEmojisFromCloud(parsedItems);
-        
-        final updatedList = localList ?? SmartList()
-          ..firebaseId = doc.id
-          ..name = cloudData['name']
-          ..type = ListType.values.firstWhere((e) => e.name == cloudData['type'], orElse: () => ListType.restock);
+        allCloudItemsToLearn.addAll(cloudItems); // Add to our giant batch
 
-        updatedList.items = parsedItems;
-        updatedList.lastModified = cloudModified;
-        updatedList.lastSynced = DateTime.now();
+        if (localList == null) {
+          final newList = SmartList()
+            ..firebaseId = doc.id
+            ..name = cloudData['name']
+            ..type = ListType.values.firstWhere((e) => e.name == cloudData['type'], orElse: () => ListType.restock)
+            ..items = cloudItems
+            ..lastModified = cloudModified
+            ..lastSynced = DateTime.now().toUtc(); 
 
+          listsToUpdate.add(newList);
+        } else {
+          // SMART MERGE (Union Strategy)
+          Map<String, ListItem> mergedMap = {};
+          bool rescuedCloudItems = false;
+
+          for (var item in localList.items) {
+            if (item.name != null) mergedMap[item.name!.toLowerCase()] = item;
+          }
+
+          for (var cloudItem in cloudItems) {
+            if (cloudItem.name == null) continue;
+            final key = cloudItem.name!.toLowerCase();
+
+            if (mergedMap.containsKey(key)) {
+              if (cloudModified.isAfter(localList.lastModified)) {
+                mergedMap[key] = cloudItem;
+              }
+            } else {
+              mergedMap[key] = cloudItem;
+              rescuedCloudItems = true;
+            }
+          }
+
+          localList.items = mergedMap.values.toList();
+
+          if (rescuedCloudItems) {
+            localList.lastModified = DateTime.now().toUtc();
+            localList.lastSynced = null; 
+          } else {
+            localList.lastModified = cloudModified.isAfter(localList.lastModified) ? cloudModified : localList.lastModified;
+            localList.lastSynced = DateTime.now().toUtc();
+          }
+
+          listsToUpdate.add(localList);
+        }
+      }
+
+      // 1. Bulk Learn Emojis First
+      if (allCloudItemsToLearn.isNotEmpty) {
+        try {
+          await _learnEmojisFromCloudFast(allCloudItemsToLearn);
+        } catch (e) {
+          debugPrint("⚠️ Warning: Failed to learn emojis: $e");
+        }
+      }
+
+      // 2. Perform ONE massive, lightning-fast database transaction
+      if (listIdsToDelete.isNotEmpty || listsToUpdate.isNotEmpty) {
         await isar.writeTxn(() async {
-          await isar.smartLists.put(updatedList);
-        
+          if (listIdsToDelete.isNotEmpty) await isar.smartLists.deleteAll(listIdsToDelete);
+          if (listsToUpdate.isNotEmpty) await isar.smartLists.putAll(listsToUpdate);
         });
       }
+
+    } catch (e) {
+      debugPrint("🔴 Error in _pullCloudChangesToLocal: $e");
+      rethrow; 
+    }
+  }
+
+  // --- PUSH: Local to Cloud ---
+  Future<void> _pushLocalChangesToCloud() async {
+    try {
+      final localLists = await isar.smartLists.where().findAll();
+      final batch = _firestore.batch();
+
+      for (var list in localLists) {
+        if (list.firebaseId == null || (list.lastSynced == null || list.lastModified.isAfter(list.lastSynced!))) {
+          
+          DocumentReference docRef;
+          if (list.firebaseId == null) {
+            docRef = _firestore.collection('shared_lists').doc(); 
+            list.firebaseId = docRef.id;
+          } else {
+            docRef = _firestore.collection('shared_lists').doc(list.firebaseId);
+          }
+
+          final itemsJson = list.items.map((item) => {
+            'name': item.name,
+            'isChecked': item.isChecked,
+            'emoji': item.emoji,
+            'quantity': item.quantity,
+            'defaultShops': item.defaultShops,
+          }).toList();
+
+          final currentUser = FirebaseAuth.instance.currentUser;
+
+          batch.set(docRef, {
+            'name': list.name,
+            'type': list.type.name,
+            'lastModified': list.lastModified.toUtc().toIso8601String(), 
+            'ownerEmail': currentUser?.email ?? 'anonymous',
+            'ownerUid': currentUser?.uid ?? 'unknown',
+            'sharedWith': list.sharedWith, 
+            'items': itemsJson,
+          }, SetOptions(merge: true));
+
+          list.lastSynced = DateTime.now().toUtc(); 
+          await isar.writeTxn(() async {
+            await isar.smartLists.put(list);
+          });
+        }
+      }
+      await batch.commit();
+    } catch (e) {
+      debugPrint("🔴 Error in _pushLocalChangesToCloud: $e");
+      rethrow;
     }
   }
 
   void dispose() {
     _connectivitySub?.cancel();
-    _authSub?.cancel(); // Don't forget to cancel our new auth listener to prevent memory leaks!
+    _authSub?.cancel(); 
     syncState.dispose();
   }
 
-  Future<void> _learnEmojisFromCloud(List<ListItem> cloudItems) async {
-    await isar.writeTxn(() async {
-      for (var item in cloudItems) {
-        if (item.name != null && item.emoji != null && item.emoji != '🛒') {
-          // Check if we have this product locally
-          final master = await isar.masterProducts.where().nameEqualTo(item.name!).findFirst();
-          
-          if (master != null && master.emoji != item.emoji) {
-            // Our partner used a different/better emoji! Let's learn it.
-            master.emoji = item.emoji;
-            await isar.masterProducts.put(master);
-          } else if (master == null) {
-            // Our partner added a totally new item we've never seen! Let's save it.
-            final newMaster = MasterProduct()
-              ..name = item.name!
-              ..emoji = item.emoji!
-              ..defaultShops = [];
-            await isar.masterProducts.put(newMaster);
-          }
+// --- NEW: Batch Processing for Emojis ---
+  Future<void> _learnEmojisFromCloudFast(List<ListItem> cloudItems) async {
+    // 1. Get all unique item names to prevent redundant queries
+    final uniqueNames = cloudItems.map((e) => e.name).whereType<String>().toSet().toList();
+    if (uniqueNames.isEmpty) return;
+
+    // 2. Do ONE database query to fetch all matching master products
+    final existingMasters = await isar.masterProducts
+        .filter()
+        .anyOf(uniqueNames, (q, String name) => q.nameEqualTo(name))
+        .findAll();
+
+    List<MasterProduct> mastersToUpdate = [];
+    
+    for (var item in cloudItems) {
+      if (item.name == null || item.emoji == null || item.emoji == '🛒') continue;
+      
+      // Look for it in our in-memory list (fast)
+      final masterIndex = existingMasters.indexWhere((m) => m.name == item.name);
+      
+      if (masterIndex != -1) {
+        final master = existingMasters[masterIndex];
+        if (master.emoji != item.emoji) {
+          master.emoji = item.emoji!;
+          // Only add if we haven't already added it to our update list
+          if (!mastersToUpdate.contains(master)) mastersToUpdate.add(master);
         }
+      } else {
+        // We don't have this item at all! Create a new one.
+        final newMaster = MasterProduct()
+          ..name = item.name!
+          ..emoji = item.emoji!
+          ..defaultShops = [];
+        
+        // Add to our lists so we don't duplicate it in this loop
+        existingMasters.add(newMaster); 
+        mastersToUpdate.add(newMaster);
       }
-    });
+    }
+
+    // 3. Do ONE database write to save everything
+    if (mastersToUpdate.isNotEmpty) {
+      await isar.writeTxn(() async {
+        await isar.masterProducts.putAll(mastersToUpdate);
+      });
+    }
   }
 }
