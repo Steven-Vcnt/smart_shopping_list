@@ -114,7 +114,7 @@ Future<void> _pullCloudChangesToLocal() async {
         ).toList();
 
         allCloudItemsToLearn.addAll(cloudItems); // Add to our giant batch
-
+        
         if (localList == null) {
           final newList = SmartList()
             ..firebaseId = doc.id
@@ -122,11 +122,21 @@ Future<void> _pullCloudChangesToLocal() async {
             ..type = ListType.values.firstWhere((e) => e.name == cloudData['type'], orElse: () => ListType.restock)
             ..items = cloudItems
             ..lastModified = cloudModified
+            // FIX: Save the original owner and share list locally!
+            ..ownerEmail = cloudData['ownerEmail']
+            ..ownerUid = cloudData['ownerUid']
+            ..sharedWith = List<String>.from(cloudData['sharedWith'] ?? [])
             ..lastSynced = DateTime.now().toUtc(); 
 
           listsToUpdate.add(newList);
         } else {
           // SMART MERGE (Union Strategy)
+          
+          // FIX: Ensure we constantly update our local permissions to match the cloud
+          localList.ownerEmail = cloudData['ownerEmail'];
+          localList.ownerUid = cloudData['ownerUid'];
+          localList.sharedWith = List<String>.from(cloudData['sharedWith'] ?? []);
+          
           Map<String, ListItem> mergedMap = {};
           bool rescuedCloudItems = false;
 
@@ -213,15 +223,15 @@ Future<void> _pullCloudChangesToLocal() async {
           final currentUser = FirebaseAuth.instance.currentUser;
 
           batch.set(docRef, {
-            'name': list.name,
-            'type': list.type.name,
-            'lastModified': list.lastModified.toUtc().toIso8601String(), 
-            'ownerEmail': currentUser?.email ?? 'anonymous',
-            'ownerUid': currentUser?.uid ?? 'unknown',
-            'sharedWith': list.sharedWith, 
-            'items': itemsJson,
-          }, SetOptions(merge: true));
-
+          'name': list.name,
+          'type': list.type.name,
+          'lastModified': list.lastModified.toUtc().toIso8601String(), 
+          // FIX: Use the list's original owner, only fall back to currentUser if it's a brand new list!
+          'ownerEmail': list.ownerEmail ?? currentUser?.email ?? 'anonymous',
+          'ownerUid': list.ownerUid ?? currentUser?.uid ?? 'unknown',
+          'sharedWith': list.sharedWith, 
+          'items': itemsJson,
+        }, SetOptions(merge: true));
           list.lastSynced = DateTime.now().toUtc(); 
           await isar.writeTxn(() async {
             await isar.smartLists.put(list);

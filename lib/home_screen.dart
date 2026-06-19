@@ -10,10 +10,8 @@ import 'package:google_sign_in/google_sign_in.dart';
 
 class HomeScreen extends StatefulWidget {
   final Isar isar;
-  // 1. Define the variable
   final SyncService syncService; 
 
-  // 2. Add 'required this.syncService' to the constructor
   const HomeScreen({
     super.key, 
     required this.isar, 
@@ -32,6 +30,25 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _loadLists();
+    
+    // --- NEW: Real-time listener to trigger a UI refresh when sync finishes ---
+    widget.syncService.syncState.addListener(_onSyncStateChanged);
+  }
+
+  @override
+  void dispose() {
+    // ALWAYS clean up listeners to prevent memory leaks!
+    widget.syncService.syncState.removeListener(_onSyncStateChanged);
+    super.dispose();
+  }
+
+  // --- NEW: Automatically fires whenever SyncService changes state ---
+  void _onSyncStateChanged() {
+    if (widget.syncService.syncState.value == SyncState.synced) {
+      if (mounted) {
+        _loadLists(); // Background sync finished! Reload the UI!
+      }
+    }
   }
 
   // Fetch all lists from the database, sorted by most recently modified
@@ -42,6 +59,12 @@ class _HomeScreenState extends State<HomeScreen> {
       _lists = lists;
       _isLoading = false;
     });
+  }
+
+  // --- NEW: Manual Pull-to-Refresh Logic ---
+  Future<void> _handleManualRefresh() async {
+    await widget.syncService.syncNow();
+    await _loadLists();
   }
 
   // Delete a list
@@ -124,7 +147,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     final newList = SmartList()
                       ..name = nameController.text.trim()
                       ..type = selectedType
-                      ..lastModified = DateTime.now();
+                      ..lastModified = DateTime.now().toUtc(); // Forced UTC consistency
 
                     await widget.isar.writeTxn(() async {
                       await widget.isar.smartLists.put(newList);
@@ -144,7 +167,8 @@ class _HomeScreenState extends State<HomeScreen> {
       },
     );
   }
-Future<void> _manualGoogleLogin() async {
+
+  Future<void> _manualGoogleLogin() async {
     try {
       final googleSignIn = GoogleSignIn.instance;
       await googleSignIn.initialize();
@@ -171,13 +195,11 @@ Future<void> _manualGoogleLogin() async {
       appBar: AppBar(
         title: const Text('My Smart Lists'),
         actions: [
-          // NEW: Real-time listener for your Google Auth state
           StreamBuilder<User?>(
             stream: FirebaseAuth.instance.authStateChanges(),
             builder: (context, snapshot) {
               final user = snapshot.data;
               
-              // IF LOGGED OUT: Show a login icon
               if (user == null) {
                 return IconButton(
                   icon: const Icon(Icons.account_circle_outlined, size: 28),
@@ -186,7 +208,6 @@ Future<void> _manualGoogleLogin() async {
                 );
               }
 
-              // IF LOGGED IN: Show your Google Avatar and a dropdown menu
               return PopupMenuButton<String>(
                 offset: const Offset(0, 45),
                 icon: CircleAvatar(
@@ -194,7 +215,6 @@ Future<void> _manualGoogleLogin() async {
                   backgroundColor: Colors.blue.shade100,
                   backgroundImage: user.photoURL != null ? NetworkImage(user.photoURL!) : null,
                   child: user.photoURL == null 
-                      // THE FIX: Safely check if email exists and isn't empty!
                       ? Text(
                           (user.email != null && user.email!.isNotEmpty) 
                               ? user.email![0].toUpperCase() 
@@ -213,10 +233,8 @@ Future<void> _manualGoogleLogin() async {
                   }
                 },
                 itemBuilder: (BuildContext context) => [
-                  // Displays your connected email address
                   PopupMenuItem(
                     enabled: false,
-                    // THE FIX: Provide a clean fallback if email is empty
                     child: Text(
                       (user.email != null && user.email!.isNotEmpty) ? user.email! : 'Anonymous User', 
                       style: const TextStyle(color: Colors.black87, fontWeight: FontWeight.bold, fontSize: 13)
@@ -235,57 +253,78 @@ Future<void> _manualGoogleLogin() async {
               );
             },
           ),
-          const SizedBox(width: 8), // Small padding for the right edge
+          const SizedBox(width: 8),
         ],
       ),
-      // NEW: Wrap the body in a Column so the Banner sits at the top!
       body: Column(
         children: [
-          // THE SYNC BANNER
           SyncBanner(syncService: widget.syncService),
           
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
-                : _lists.isEmpty
-                    ? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.list_alt, size: 80, color: Colors.grey.shade300), const SizedBox(height: 16), Text('No lists yet.', style: TextStyle(fontSize: 18, color: Colors.grey.shade600)), const SizedBox(height: 8), Text('Tap the + button to create one!', style: TextStyle(color: Colors.grey.shade500))]))
-                    : ListView.builder(
-                        padding: const EdgeInsets.all(8.0),
-                        itemCount: _lists.length,
-                        itemBuilder: (context, index) {
-                          final list = _lists[index];
-                          final remainingItems = list.items.where((item) => !item.isChecked).length;
-
-                          return Dismissible(
-                            key: Key(list.id.toString()),
-                            direction: DismissDirection.endToStart,
-                            background: Container(alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20.0), color: Colors.redAccent, child: const Icon(Icons.delete, color: Colors.white)),
-                            confirmDismiss: (direction) async => await showDialog<bool>(context: context, builder: (context) => AlertDialog(title: const Text('Delete List?'), content: Text('Are you sure you want to delete "${list.name}"?'), actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')), FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.red), onPressed: () => Navigator.pop(context, true), child: const Text('Delete'))])),
-                            onDismissed: (direction) => _deleteList(list),
-                            child: Card(
-                              elevation: 1,
-                              margin: const EdgeInsets.symmetric(vertical: 4.0),
-                              child: ListTile(
-                                leading: CircleAvatar(backgroundColor: Colors.blue.shade50, child: Icon(_getIconForType(list.type), color: Colors.blue.shade700)),
-                                title: Text(list.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                                subtitle: Text(list.items.isEmpty ? 'Empty list' : '$remainingItems item(s) remaining'),
-                                onTap: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (context) => ListDetailScreen(
-                                        isar: widget.isar,
-                                        smartList: list,
-                                        syncService: widget.syncService, // PASSED DOWN!
-                                      ),
-                                    ),
-                                  ).then((_) => _loadLists());
-                                },
+                // --- NEW: Wrapped the main content in a RefreshIndicator ---
+                : RefreshIndicator(
+                    onRefresh: _handleManualRefresh,
+                    child: _lists.isEmpty
+                        // Using a ListView for the empty state guarantees Pull-to-Refresh still functions
+                        ? ListView(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            children: [
+                              SizedBox(height: MediaQuery.of(context).size.height * 0.3),
+                              Center(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.list_alt, size: 80, color: Colors.grey.shade300),
+                                    const SizedBox(height: 16),
+                                    Text('No lists yet.', style: TextStyle(fontSize: 18, color: Colors.grey.shade600)),
+                                    const SizedBox(height: 8),
+                                    Text('Tap the + button to create one!', style: TextStyle(color: Colors.grey.shade500))
+                                  ],
+                                ),
                               ),
-                            ),
-                          );
-                        },
-                      ),
+                            ],
+                          )
+                        : ListView.builder(
+                            physics: const AlwaysScrollableScrollPhysics(), // Ensures pull-to-refresh works
+                            padding: const EdgeInsets.all(8.0),
+                            itemCount: _lists.length,
+                            itemBuilder: (context, index) {
+                              final list = _lists[index];
+                              final remainingItems = list.items.where((item) => !item.isChecked).length;
+
+                              return Dismissible(
+                                key: Key(list.id.toString()),
+                                direction: DismissDirection.endToStart,
+                                background: Container(alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20.0), color: Colors.redAccent, child: const Icon(Icons.delete, color: Colors.white)),
+                                confirmDismiss: (direction) async => await showDialog<bool>(context: context, builder: (context) => AlertDialog(title: const Text('Delete List?'), content: Text('Are you sure you want to delete "${list.name}"?'), actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')), FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.red), onPressed: () => Navigator.pop(context, true), child: const Text('Delete'))])),
+                                onDismissed: (direction) => _deleteList(list),
+                                child: Card(
+                                  elevation: 1,
+                                  margin: const EdgeInsets.symmetric(vertical: 4.0),
+                                  child: ListTile(
+                                    leading: CircleAvatar(backgroundColor: Colors.blue.shade50, child: Icon(_getIconForType(list.type), color: Colors.blue.shade700)),
+                                    title: Text(list.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                                    subtitle: Text(list.items.isEmpty ? 'Empty list' : '$remainingItems item(s) remaining'),
+                                    onTap: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) => ListDetailScreen(
+                                            isar: widget.isar,
+                                            smartList: list,
+                                            syncService: widget.syncService, 
+                                          ),
+                                        ),
+                                      ).then((_) => _loadLists());
+                                    },
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
           ),
         ],
       ),
