@@ -79,43 +79,6 @@ void main() async {
   runApp(MyApp(isar: isar, syncService: syncService));
 }
 
-// Helper function to inject default products from the pre-loaded database
-Future<void> _seedMasterbaseIfNeeded(Isar isar) async {
-  // 1. Seed Products
-  final productCount = await isar.masterProducts.count();
-  if (productCount == 0) {
-    final starterPack = [
-      MasterProduct()..name = 'Lait'..emoji = '🥛'..defaultCategory = 'dairy',
-      MasterProduct()..name = 'Baguette'..emoji = '🥖'..defaultCategory = 'bakery',
-      MasterProduct()..name = 'Beurre'..emoji = '🧈'..defaultCategory = 'dairy',
-      MasterProduct()..name = 'Oeufs'..emoji = '🥚'..defaultCategory = 'dairy',
-      MasterProduct()..name = 'Poulet'..emoji = '🍗'..defaultCategory = 'meat',
-      MasterProduct()..name = 'Pommes'..emoji = '🍎'..defaultCategory = 'produce',
-      MasterProduct()..name = 'Carottes'..emoji = '🥕'..defaultCategory = 'produce',
-      MasterProduct()..name = 'Pâtes'..emoji = '🍝'..defaultCategory = 'pantry',
-    ];
-    await isar.writeTxn(() async {
-      await isar.masterProducts.putAll(starterPack);
-    });
-  }
-
-  // 2. NEW: Seed Default Shops
-  final shopCount = await isar.userShops.count();
-  if (shopCount == 0) {
-    final starterShops = [
-      UserShop()..name = 'Supermarché',
-      UserShop()..name = 'Boulangerie',
-      UserShop()..name = 'Boucherie',
-      UserShop()..name = 'Marché Ouvert',
-      UserShop()..name = 'Pharmacie',
-      UserShop()..name = 'Picard', // Added Picard for you!
-    ];
-    await isar.writeTxn(() async {
-      await isar.userShops.putAll(starterShops);
-    });
-    debugPrint('Database seeded with default products and shops!');
-  }
-}
 class MyApp extends StatelessWidget {
   final Isar isar;
   final SyncService syncService;

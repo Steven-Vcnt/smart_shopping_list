@@ -69,9 +69,18 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // Delete a list
   Future<void> _deleteList(SmartList list) async {
+    // 1. Trigger setState synchronously so Dismissible doesn't throw a tree error
+    setState(() {
+      _lists.removeWhere((l) => l.id == list.id);
+    });
+
+    // 2. Perform the async DB cascading wipe & deletion
     await widget.isar.writeTxn(() async {
+      list.items.clear(); // Explicit cascading delete for child items
       await widget.isar.smartLists.delete(list.id);
     });
+    
+    // 3. Reload from DB in case of background sync changes
     if (!mounted) return;
     _loadLists();
   }
@@ -144,11 +153,33 @@ class _HomeScreenState extends State<HomeScreen> {
                   onPressed: () async {
                     if (nameController.text.trim().isEmpty) return;
 
+                    // Split input by newlines or commas to handle pasted bulk lists
+                    final items = nameController.text
+                        .trim()
+                        .split(RegExp(r'\n|,'))
+                        .where((s) => s.trim().isNotEmpty)
+                        .toList();
+                    
+                    if (items.isEmpty) return;
+
+                    // Instantiate ONE list with the first item as the title
                     final newList = SmartList()
-                      ..name = nameController.text.trim()
+                      ..name = items.first.trim()
                       ..type = selectedType
                       ..lastModified = DateTime.now().toUtc(); // Forced UTC consistency
 
+                    // Append all remaining items to the list
+                    if (items.length > 1) {
+                      for (int i = 1; i < items.length; i++) {
+                        newList.items.add(ListItem()
+                          ..name = items[i].trim()
+                          ..isChecked = false
+                          ..emoji = '🛒'
+                          ..quantity = 1.0);
+                      }
+                    }
+
+                    // Single save transaction
                     await widget.isar.writeTxn(() async {
                       await widget.isar.smartLists.put(newList);
                     });

@@ -23,279 +23,203 @@ class SyncService {
 
   void _initListeners() {
     _connectivitySub = Connectivity().onConnectivityChanged.listen((List<ConnectivityResult> results) {
-      if (!results.contains(ConnectivityResult.none)) {
-        syncNow();
-      } else {
-        syncState.value = SyncState.offline;
-      }
+      if (!results.contains(ConnectivityResult.none)) syncNow();
     });
     
     _authSub = FirebaseAuth.instance.authStateChanges().listen((User? user) {
-      if (user != null) {
-        syncNow();
-      } else {
-        syncState.value = SyncState.offline; 
-      }
+      if (user != null) syncNow();
     });
-
-    // Don't call syncNow() immediately on boot; let the Auth Listener trigger it once it confirms a user exists.
   }
 
   Future<void> syncNow() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
-      debugPrint("Sync Aborted: User is null. Waiting for auth state change.");
-      return; 
+      debugPrint("Sync Aborted: User null.");
+      return;
     }
-
-    // REMOVED the strict connectivity_plus blocker. 
-    // Firestore handles offline caching automatically. It's better to let Firestore 
-    // attempt the connection rather than blocking it manually.
 
     try {
       syncState.value = SyncState.syncing;
       
-      // PULL BEFORE PUSH!
+      // 1. Sync Lists (Private User Data)
       await _pullCloudChangesToLocal();
       await _pushLocalChangesToCloud();
+
+      // 2. Sync Master Products (The Hive Mind Taxonomy)
+      await _pullMasterProducts();
+      await _pushMasterProducts();
+
+      // 3. Sync Store Layouts (Crowdsourced Routing)
+      await _pullShops();
+      await _pushShops();
 
       syncState.value = SyncState.synced;
       debugPrint("✅ Sync Completed Successfully");
     } catch (e) {
-      debugPrint('🔴 Sync Error Caught: $e');
+      debugPrint('🔴 Sync Error: $e');
       syncState.value = SyncState.error;
     }
   }
-Future<void> _pullCloudChangesToLocal() async {
+
+  // --- 1. LIST SYNC ---
+  Future<void> _pullCloudChangesToLocal() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null || user.email == null) return;
 
-    try {
-      final snapshot = await _firestore.collection('shared_lists')
-          .where(
-            Filter.or(
-              Filter('ownerEmail', isEqualTo: user.email),
-              Filter('sharedWith', arrayContains: user.email),
-            ),
-          )
-          .get();
+    final snapshot = await _firestore.collection('shared_lists')
+        .where(Filter.or(
+          Filter('ownerEmail', isEqualTo: user.email),
+          Filter('sharedWith', arrayContains: user.email),
+        )).get();
 
-      final localSyncedLists = await isar.smartLists.filter().firebaseIdIsNotNull().findAll();
-      final Set<String> activeCloudIds = snapshot.docs.map((doc) => doc.id).toSet();
-      
-      // We will collect all lists to delete and update, then do ONE database transaction.
-      List<int> listIdsToDelete = [];
-      List<SmartList> listsToUpdate = [];
-      List<ListItem> allCloudItemsToLearn = []; // For batching the emoji learning
+    final localSyncedLists = await isar.smartLists.filter().firebaseIdIsNotNull().findAll();
+    final activeCloudIds = snapshot.docs.map((doc) => doc.id).toSet();
+    
+    List<int> listIdsToDelete = [];
+    List<SmartList> listsToUpdate = [];
 
-      for (var localList in localSyncedLists) {
-         if (!activeCloudIds.contains(localList.firebaseId)) {
-            listIdsToDelete.add(localList.id);
-         }
-      }
-
-      for (var doc in snapshot.docs) {
-        final cloudData = doc.data();
-        if (cloudData['lastModified'] == null) continue;
-        
-        final cloudModified = DateTime.parse(cloudData['lastModified']).toUtc();
-        
-        // Find the local list IN MEMORY (Lightning fast!)
-        final localListIndex = localSyncedLists.indexWhere((l) => l.firebaseId == doc.id);
-        SmartList? localList = localListIndex != -1 ? localSyncedLists[localListIndex] : null;
-
-        final List<dynamic> itemsData = cloudData['items'] ?? [];
-        final cloudItems = itemsData.map((itemMap) => ListItem()
-          ..name = itemMap['name']
-          ..isChecked = itemMap['isChecked'] ?? false
-          ..emoji = itemMap['emoji']
-          ..quantity = (itemMap['quantity'] as num?)?.toDouble()
-          ..defaultShops = List<String>.from(itemMap['defaultShops'] ?? [])
-        ).toList();
-
-        allCloudItemsToLearn.addAll(cloudItems); // Add to our giant batch
-        
-        if (localList == null) {
-          final newList = SmartList()
-            ..firebaseId = doc.id
-            ..name = cloudData['name']
-            ..type = ListType.values.firstWhere((e) => e.name == cloudData['type'], orElse: () => ListType.restock)
-            ..items = cloudItems
-            ..lastModified = cloudModified
-            // FIX: Save the original owner and share list locally!
-            ..ownerEmail = cloudData['ownerEmail']
-            ..ownerUid = cloudData['ownerUid']
-            ..sharedWith = List<String>.from(cloudData['sharedWith'] ?? [])
-            ..lastSynced = DateTime.now().toUtc(); 
-
-          listsToUpdate.add(newList);
-        } else {
-          // SMART MERGE (Union Strategy)
-          
-          // FIX: Ensure we constantly update our local permissions to match the cloud
-          localList.ownerEmail = cloudData['ownerEmail'];
-          localList.ownerUid = cloudData['ownerUid'];
-          localList.sharedWith = List<String>.from(cloudData['sharedWith'] ?? []);
-          
-          Map<String, ListItem> mergedMap = {};
-          bool rescuedCloudItems = false;
-
-          for (var item in localList.items) {
-            if (item.name != null) mergedMap[item.name!.toLowerCase()] = item;
-          }
-
-          for (var cloudItem in cloudItems) {
-            if (cloudItem.name == null) continue;
-            final key = cloudItem.name!.toLowerCase();
-
-            if (mergedMap.containsKey(key)) {
-              if (cloudModified.isAfter(localList.lastModified)) {
-                mergedMap[key] = cloudItem;
-              }
-            } else {
-              mergedMap[key] = cloudItem;
-              rescuedCloudItems = true;
-            }
-          }
-
-          localList.items = mergedMap.values.toList();
-
-          if (rescuedCloudItems) {
-            localList.lastModified = DateTime.now().toUtc();
-            localList.lastSynced = null; 
-          } else {
-            localList.lastModified = cloudModified.isAfter(localList.lastModified) ? cloudModified : localList.lastModified;
-            localList.lastSynced = DateTime.now().toUtc();
-          }
-
-          listsToUpdate.add(localList);
-        }
-      }
-
-      // 1. Bulk Learn Emojis First
-      if (allCloudItemsToLearn.isNotEmpty) {
-        try {
-          await _learnEmojisFromCloudFast(allCloudItemsToLearn);
-        } catch (e) {
-          debugPrint("⚠️ Warning: Failed to learn emojis: $e");
-        }
-      }
-
-      // 2. Perform ONE massive, lightning-fast database transaction
-      if (listIdsToDelete.isNotEmpty || listsToUpdate.isNotEmpty) {
-        await isar.writeTxn(() async {
-          if (listIdsToDelete.isNotEmpty) await isar.smartLists.deleteAll(listIdsToDelete);
-          if (listsToUpdate.isNotEmpty) await isar.smartLists.putAll(listsToUpdate);
-        });
-      }
-
-    } catch (e) {
-      debugPrint("🔴 Error in _pullCloudChangesToLocal: $e");
-      rethrow; 
+    for (var localList in localSyncedLists) {
+      if (!activeCloudIds.contains(localList.firebaseId)) listIdsToDelete.add(localList.id);
     }
+
+    for (var doc in snapshot.docs) {
+      final cloudData = doc.data();
+      final cloudModified = DateTime.parse(cloudData['lastModified']).toUtc();
+      final localList = localSyncedLists.firstWhere((l) => l.firebaseId == doc.id, orElse: () => SmartList());
+
+      final List<dynamic> itemsData = cloudData['items'] ?? [];
+      final cloudItems = itemsData.map((m) => ListItem()
+        ..name = m['name']
+        ..isChecked = m['isChecked'] ?? false
+        ..emoji = m['emoji']
+        ..quantity = (m['quantity'] as num?)?.toDouble()
+        ..defaultShops = List<String>.from(m['defaultShops'] ?? [])
+      ).toList();
+
+      if (localList.firebaseId == null) {
+        listsToUpdate.add(SmartList()
+          ..firebaseId = doc.id
+          ..name = cloudData['name']
+          ..type = ListType.values.firstWhere((e) => e.name == cloudData['type'], orElse: () => ListType.restock)
+          ..items = cloudItems
+          ..lastModified = cloudModified
+          ..ownerEmail = cloudData['ownerEmail']
+          ..ownerUid = cloudData['ownerUid']
+          ..sharedWith = List<String>.from(cloudData['sharedWith'] ?? [])
+          ..lastSynced = DateTime.now().toUtc());
+      } else {
+        localList.items = cloudItems;
+        localList.lastModified = cloudModified;
+        localList.lastSynced = DateTime.now().toUtc();
+        listsToUpdate.add(localList);
+      }
+    }
+
+    await isar.writeTxn(() async {
+      await isar.smartLists.deleteAll(listIdsToDelete);
+      await isar.smartLists.putAll(listsToUpdate);
+    });
   }
 
-  // --- PUSH: Local to Cloud ---
   Future<void> _pushLocalChangesToCloud() async {
-    try {
-      final localLists = await isar.smartLists.where().findAll();
-      final batch = _firestore.batch();
+    final localLists = await isar.smartLists.where().findAll();
+    final batch = _firestore.batch();
+    final user = FirebaseAuth.instance.currentUser;
 
-      for (var list in localLists) {
-        if (list.firebaseId == null || (list.lastSynced == null || list.lastModified.isAfter(list.lastSynced!))) {
-          
-          DocumentReference docRef;
-          if (list.firebaseId == null) {
-            docRef = _firestore.collection('shared_lists').doc(); 
-            list.firebaseId = docRef.id;
-          } else {
-            docRef = _firestore.collection('shared_lists').doc(list.firebaseId);
-          }
+    for (var list in localLists) {
+      if (list.firebaseId == null || (list.lastSynced == null || list.lastModified.isAfter(list.lastSynced!))) {
+        final docRef = list.firebaseId == null ? _firestore.collection('shared_lists').doc() : _firestore.collection('shared_lists').doc(list.firebaseId);
+        list.firebaseId = docRef.id;
 
-          final itemsJson = list.items.map((item) => {
-            'name': item.name,
-            'isChecked': item.isChecked,
-            'emoji': item.emoji,
-            'quantity': item.quantity,
-            'defaultShops': item.defaultShops,
-          }).toList();
-
-          final currentUser = FirebaseAuth.instance.currentUser;
-
-          batch.set(docRef, {
+        batch.set(docRef, {
           'name': list.name,
           'type': list.type.name,
-          'lastModified': list.lastModified.toUtc().toIso8601String(), 
-          // FIX: Use the list's original owner, only fall back to currentUser if it's a brand new list!
-          'ownerEmail': list.ownerEmail ?? currentUser?.email ?? 'anonymous',
-          'ownerUid': list.ownerUid ?? currentUser?.uid ?? 'unknown',
-          'sharedWith': list.sharedWith, 
-          'items': itemsJson,
+          'lastModified': list.lastModified.toUtc().toIso8601String(),
+          'ownerEmail': list.ownerEmail ?? user?.email,
+          'ownerUid': list.ownerUid ?? user?.uid,
+          'sharedWith': list.sharedWith,
+          'items': list.items.map((i) => {'name': i.name, 'isChecked': i.isChecked, 'emoji': i.emoji, 'quantity': i.quantity, 'defaultShops': i.defaultShops}).toList(),
         }, SetOptions(merge: true));
-          list.lastSynced = DateTime.now().toUtc(); 
-          await isar.writeTxn(() async {
-            await isar.smartLists.put(list);
-          });
-        }
+        
+        list.lastSynced = DateTime.now().toUtc();
+        await isar.writeTxn(() => isar.smartLists.put(list));
       }
-      await batch.commit();
-    } catch (e) {
-      debugPrint("🔴 Error in _pushLocalChangesToCloud: $e");
-      rethrow;
     }
+    await batch.commit();
+  }
+
+  // --- 2. MASTERBASE SYNC ---
+  Future<void> _pullMasterProducts() async {
+    final snapshot = await _firestore.collection('global_master_products').get();
+    List<MasterProduct> toUpdate = [];
+
+    for (var doc in snapshot.docs) {
+      final data = doc.data();
+      var master = await isar.masterProducts.where().nameEqualTo(data['name']).findFirst() 
+                ?? MasterProduct()..name = data['name'];
+
+      master.firebaseId = doc.id;
+      master.emoji = data['emoji'] ?? '🛒';
+      master.category = ItemCategory.values.firstWhere((e) => e.name == data['category'], orElse: () => ItemCategory.unmapped);
+      
+      toUpdate.add(master);
+    }
+    await isar.writeTxn(() async => await isar.masterProducts.putAll(toUpdate));
+  }
+
+  Future<void> _pushMasterProducts() async {
+    final localMasters = await isar.masterProducts.where().findAll();
+    final batch = _firestore.batch();
+    
+    for (var m in localMasters) {
+      if (m.firebaseId == null) {
+        final ref = _firestore.collection('global_master_products').doc();
+        m.firebaseId = ref.id;
+        batch.set(ref, {'name': m.name, 'emoji': m.emoji, 'category': m.category.name});
+        await isar.writeTxn(() => isar.masterProducts.put(m));
+      }
+    }
+    await batch.commit();
+  }
+
+  // --- 3. SHOP LAYOUT SYNC ---
+  Future<void> _pullShops() async {
+    final snapshot = await _firestore.collection('global_shop_layouts').get();
+    List<UserShop> shopsToUpdate = [];
+
+    for (var doc in snapshot.docs) {
+      final data = doc.data();
+      var shop = await isar.userShops.where().nameEqualTo(data['name']).findFirst() 
+              ?? UserShop()..name = data['name'];
+
+      final List<dynamic> layoutData = data['zoneLayout'] ?? [];
+      shop.zoneLayout = layoutData.map((z) => ZonePosition()
+        ..category = ItemCategory.values.firstWhere((e) => e.name == z['category'], orElse: () => ItemCategory.unmapped)
+        ..aisleOrder = (z['aisleOrder'] as num).toDouble()
+      ).toList();
+
+      shopsToUpdate.add(shop);
+    }
+    await isar.writeTxn(() async => await isar.userShops.putAll(shopsToUpdate));
+  }
+
+  Future<void> _pushShops() async {
+    final localShops = await isar.userShops.where().findAll();
+    final batch = _firestore.batch();
+    
+    for (var s in localShops) {
+      final ref = _firestore.collection('global_shop_layouts').doc(s.name);
+      batch.set(ref, {
+        'name': s.name,
+        'zoneLayout': s.zoneLayout.map((z) => {'category': z.category.name, 'aisleOrder': z.aisleOrder}).toList(),
+      });
+    }
+    await batch.commit();
   }
 
   void dispose() {
     _connectivitySub?.cancel();
     _authSub?.cancel(); 
     syncState.dispose();
-  }
-
-// --- NEW: Batch Processing for Emojis ---
-  Future<void> _learnEmojisFromCloudFast(List<ListItem> cloudItems) async {
-    // 1. Get all unique item names to prevent redundant queries
-    final uniqueNames = cloudItems.map((e) => e.name).whereType<String>().toSet().toList();
-    if (uniqueNames.isEmpty) return;
-
-    // 2. Do ONE database query to fetch all matching master products
-    final existingMasters = await isar.masterProducts
-        .filter()
-        .anyOf(uniqueNames, (q, String name) => q.nameEqualTo(name))
-        .findAll();
-
-    List<MasterProduct> mastersToUpdate = [];
-    
-    for (var item in cloudItems) {
-      if (item.name == null || item.emoji == null || item.emoji == '🛒') continue;
-      
-      // Look for it in our in-memory list (fast)
-      final masterIndex = existingMasters.indexWhere((m) => m.name == item.name);
-      
-      if (masterIndex != -1) {
-        final master = existingMasters[masterIndex];
-        if (master.emoji != item.emoji) {
-          master.emoji = item.emoji!;
-          // Only add if we haven't already added it to our update list
-          if (!mastersToUpdate.contains(master)) mastersToUpdate.add(master);
-        }
-      } else {
-        // We don't have this item at all! Create a new one.
-        final newMaster = MasterProduct()
-          ..name = item.name!
-          ..emoji = item.emoji!
-          ..defaultShops = [];
-        
-        // Add to our lists so we don't duplicate it in this loop
-        existingMasters.add(newMaster); 
-        mastersToUpdate.add(newMaster);
-      }
-    }
-
-    // 3. Do ONE database write to save everything
-    if (mastersToUpdate.isNotEmpty) {
-      await isar.writeTxn(() async {
-        await isar.masterProducts.putAll(mastersToUpdate);
-      });
-    }
   }
 }

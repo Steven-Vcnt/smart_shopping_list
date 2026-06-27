@@ -1,7 +1,6 @@
 import 'package:isar/isar.dart';
 
 // This line is required for Isar code generation.
-// You will see a red error here until we run the generator!
 part 'database_models.g.dart';
 
 // Define the behaviors for our lists
@@ -10,6 +9,26 @@ enum ListType {
   quickRun,   // ⚡ The Corner Store (Simple checklist, no routing)
   reusable,   // 🧳 Packing lists (Items uncheck on reset)
   blueprint   // 📋 Recipes/Templates (Read-only, copies to other lists)
+}
+
+// --- THE GLOBAL TAXONOMY (French Localization) ---
+enum ItemCategory {
+  produce("🥬 Fruits & Légumes"),
+  bakery("🥖 Boulangerie & Pâtisserie"),
+  meatSeafood("🥩 Boucherie & Poissonnerie"),
+  dairy("🧀 Frais & Crémerie"),
+  pantry("🥫 Épicerie Salée"),
+  snacks("🍬 Épicerie Sucrée"),
+  breakfast("☕ Petit-déjeuner"),
+  beverages("🧃 Boissons"),
+  alcohol("🍷 Cave & Alcools"),
+  frozen("🧊 Surgelés"),
+  personalCare("🧴 Hygiène & Beauté"),
+  household("🧻 Entretien & Animaux"),
+  unmapped("🛒 Autre");
+
+  final String label;
+  const ItemCategory(this.label);
 }
 
 @collection
@@ -25,14 +44,14 @@ class SmartList {
   
   // --- SYNC PROPERTIES ---
   @Index(unique: true, replace: true)
-  String? firebaseId; // Links this local list to the cloud document
+  String? firebaseId; 
   
-  DateTime? lastSynced; // Remembers the last time we pushed to the cloud
+  DateTime? lastSynced; 
 
-  // --- NEW: COLLABORATION PROPERTIES ---
-  String? ownerEmail; // Tracks who created the list
-  String? ownerUid;   // The Firebase UID of the owner
-  List<String> sharedWith = []; // Emails of the people allowed to see/edit this list
+  // --- COLLABORATION PROPERTIES ---
+  String? ownerEmail; 
+  String? ownerUid;   
+  List<String> sharedWith = []; 
 
   List<ListItem> items = [];
 }
@@ -44,8 +63,6 @@ class ListItem {
   String? emoji;
   double? quantity;
   String? unit;
-  
-  // Now a list!
   List<String> defaultShops = []; 
 }
 
@@ -59,27 +76,30 @@ class MasterProduct {
   late String name;
 
   String? emoji;
-  String? defaultCategory;
   
-  // Now a list so a product can belong to multiple shops!
+  // Assigns the product to a Zone for Waze Routing
+  @enumerated
+  ItemCategory category = ItemCategory.unmapped; 
+  
   List<String> defaultShops = []; 
-
   List<ShopHabit> shopHabits = [];
   
-  // --- NEW: SPATIAL LEARNING FIELDS ---
-  List<ShopPosition> shopPositions = [];
+  // --- PREDICTIVE INTELLIGENCE FIELDS ---
+  int cycleDays = 14;           
+  DateTime? lastPurchasedAt;    
+  List<CompanionItem> companions = []; 
 
-  // --- NEW: PREDICTIVE INTELLIGENCE FIELDS ---
-  int cycleDays = 14;           // How often user buys this (default 2 weeks)
-  DateTime? lastPurchasedAt;    // Used to calculate the urgency score
-  List<CompanionItem> companions = []; // Used to suggest paired items
+  // --- SYNC PROPERTIES ---
+  @Index()
+  String? firebaseId;
+  DateTime lastModified = DateTime.now();
+  DateTime? lastSynced;
 }
 
-// --- NEW: COMPANION MODEL FOR SUGGESTIONS ---
 @embedded
 class CompanionItem {
   String? productName;
-  double weight = 0.0; // Probability (0.0 to 1.0)
+  double weight = 0.0; 
 }
 
 @embedded
@@ -90,9 +110,10 @@ class ShopHabit {
 
 // --- NEW: SHOP POSITION FOR ROUTING ---
 @embedded
-class ShopPosition {
-  String? shopName;
-  double aisleOrder = 99.0; // Default to end of list
+class ZonePosition {
+  @enumerated
+  ItemCategory category = ItemCategory.unmapped;
+  double aisleOrder = 99.0; // 1.0 is entrance, 99.0 is exit
 }
 
 // --- DYNAMIC SHOP MODEL ---
@@ -104,8 +125,16 @@ class UserShop {
   @Index(unique: true, replace: true)
   late String name;
 
-  // --- NEW: GEOFENCING FIELDS ---
+  // --- GEOFENCING FIELDS ---
   double? lat;
   double? lng;
-  double radius = 50.0; // Default 50m radius
+  double radius = 50.0; 
+
+  // --- NEW: SYNC & ROUTING FIELDS ---
+  String? firebaseId;
+  DateTime lastModified = DateTime.now();
+  DateTime? lastSynced;
+  
+  // The Waze Route: The learned layout of zones for this specific store
+  List<ZonePosition> zoneLayout = []; 
 }

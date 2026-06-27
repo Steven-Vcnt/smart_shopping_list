@@ -9,6 +9,7 @@ import 'widgets/prediction_banner.dart';
 import 'widgets/shared_users_bottom_sheet.dart';
 import 'widgets/store_detection_banner.dart';
 import 'services/location_routing_service.dart';
+import 'services/routing_engine.dart';
 import 'sync_service.dart';
 import 'dart:async';
 
@@ -37,13 +38,14 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
   
   // --- Spatial Routing & Heuristics ---
   late LocationRoutingService _locationService;
+  late RoutingEngine _routingEngine;
   
-  // FIX: Using the correct DetectedShop types from your routing service
   StreamSubscription<DetectedShop?>? _shopSubscription;
   UserShop? _detectedShop;       // Confirmed active shop (Local Database Model)
   DetectedShop? _pendingShop;    // Detected but not yet confirmed by user (GPS Model)
   
-  Map<String, double> _itemAisleOrders = {};
+  // Store categories instead of individual item orders
+  Map<String, ItemCategory> _itemCategories = {};
   final List<String> _checkSequence = [];
   
   // --- Track the last checked item for our Undo button ---
@@ -54,16 +56,45 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
     super.initState();
     _currentList = widget.smartList;
     _locationService = LocationRoutingService(widget.isar);
+    _routingEngine = RoutingEngine(widget.isar);
     _initLocationTracking();
     _loadShops();
+    
+    // NEW: Listen to background syncs to automatically refresh the UI!
+    widget.syncService.syncState.addListener(_onSyncStateChanged);
   }
   
   @override
   void dispose() {
+    widget.syncService.syncState.removeListener(_onSyncStateChanged);
     _shopSubscription?.cancel();
     _locationService.stopTracking();
     _processHeuristicsBatch();
     super.dispose();
+  }
+
+  // NEW: Automatically reload the list from the database when sync finishes
+  void _onSyncStateChanged() {
+    if (widget.syncService.syncState.value == SyncState.synced) {
+      _loadCurrentList();
+    }
+  }
+
+  // NEW: Fetch the absolute latest version of this list from Isar
+  Future<void> _loadCurrentList() async {
+    final updatedList = await widget.isar.smartLists.get(_currentList.id);
+    if (updatedList != null && mounted) {
+      setState(() {
+        _currentList = updatedList;
+      });
+      await _updateAisleOrdersAndSort();
+    }
+  }
+
+  // NEW: Manual Pull-to-Refresh logic
+  Future<void> _handleManualRefresh() async {
+    await widget.syncService.syncNow();
+    await _loadCurrentList();
   }
 
   Future<void> _initLocationTracking() async {
@@ -78,7 +109,6 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
         });
         await _updateAisleOrdersAndSort();
       } else if (shop.name != _detectedShop?.name) {
-        // FIX: Compare by .name instead of .id, and assign DetectedShop!
         // Don't auto-confirm! Show the banner and let the user decide.
         setState(() => _pendingShop = shop);
       }
@@ -87,7 +117,6 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
 
   /// Called when user taps "Yes!" on the StoreDetectionBanner.
   Future<void> _confirmDetectedShop(DetectedShop shop) async {
-    // FIX: Safely map the incoming GPS DetectedShop to our local UserShop database model
     final matchedUserShop = _shops.firstWhere(
       (s) => s.name == shop.name,
       orElse: () => UserShop()..name = shop.name,
@@ -121,27 +150,24 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
 
   Future<void> _updateAisleOrdersAndSort() async {
     if (_detectedShop == null) {
-      _itemAisleOrders.clear();
+      _itemCategories.clear();
       await _sortList();
       return;
     }
 
+    // Fetch global categories for the items
     final itemNames = _currentList.items.map((e) => e.name ?? '').toList();
     final masters = await widget.isar.masterProducts.filter()
       .anyOf(itemNames, (q, String name) => q.nameEqualTo(name)).findAll();
     
-    Map<String, double> newAisleOrders = {};
+    Map<String, ItemCategory> categoriesMap = {};
     for (var master in masters) {
-      final pos = master.shopPositions.firstWhere(
-        (p) => p.shopName == _detectedShop!.name,
-        orElse: () => ShopPosition()..shopName = _detectedShop!.name..aisleOrder = 99.0,
-      );
-      newAisleOrders[master.name] = pos.aisleOrder;
+      categoriesMap[master.name] = master.category;
     }
 
     if (mounted) {
       setState(() {
-        _itemAisleOrders = newAisleOrders;
+        _itemCategories = categoriesMap;
       });
       await _sortList();
     }
@@ -150,47 +176,14 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
   Future<void> _processHeuristicsBatch() async {
     if (_detectedShop == null || _checkSequence.isEmpty) return;
     
-    final shopName = _detectedShop!.name;
-    final List<String> sequence = List.from(_checkSequence);
-    
-    final masters = await widget.isar.masterProducts.filter()
-      .anyOf(sequence, (q, String name) => q.nameEqualTo(name)).findAll();
-    
-    if (masters.isEmpty) return;
-
-    await widget.isar.writeTxn(() async {
-      for (int i = 0; i < sequence.length; i++) {
-        final itemName = sequence[i];
-        final currentPosInSequence = (i + 1).toDouble(); 
-        
-        final masterIndex = masters.indexWhere((m) => m.name == itemName);
-        if (masterIndex == -1) continue;
-        
-        final master = masters[masterIndex];
-        
-        int posIndex = master.shopPositions.indexWhere((p) => p.shopName == shopName);
-        if (posIndex != -1) {
-          // EMA: alpha = 0.3
-          double oldOrder = master.shopPositions[posIndex].aisleOrder;
-          master.shopPositions[posIndex].aisleOrder = (0.3 * currentPosInSequence) + (0.7 * oldOrder);
-          master.shopPositions = List.from(master.shopPositions);
-        } else {
-          master.shopPositions = List.from(master.shopPositions)..add(
-            ShopPosition()
-              ..shopName = shopName
-              ..aisleOrder = currentPosInSequence
-          );
-        }
-        
-        await widget.isar.masterProducts.put(master);
-      }
-    });
+    // Offload the complex math to the dedicated RoutingEngine!
+    await _routingEngine.learnStoreLayout(_detectedShop!.name, List<String>.from(_checkSequence));
   }
 
   Future<void> _sendToCart() async {
     var restockList = await widget.isar.smartLists.filter().typeEqualTo(ListType.restock).findFirst();
     if (restockList == null) {
-      restockList = SmartList()..name = 'My Groceries'..type = ListType.restock..lastModified = DateTime.now();
+      restockList = SmartList()..name = 'My Groceries'..type = ListType.restock..lastModified = DateTime.now().toUtc();
       await widget.isar.writeTxn(() async { await widget.isar.smartLists.put(restockList!); });
     }
 
@@ -211,7 +204,7 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
         }
       }
       restockList.items = updatedItems;
-      restockList.lastModified = DateTime.now();
+      restockList.lastModified = DateTime.now().toUtc();
       await widget.isar.smartLists.put(restockList);
     });
 
@@ -233,14 +226,34 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
   Future<void> _sortList() async {
     setState(() {
       _currentList.items.sort((a, b) {
+        // 1. Checked items always go to the bottom
         if (a.isChecked && !b.isChecked) return 1;
         if (!a.isChecked && b.isChecked) return -1;
         
-        // --- NEW: Spatial Sorting based on Heuristics ---
+        // 2. ZONE-BASED ROUTING (If we are in a detected shop)
         if (_detectedShop != null && !a.isChecked && !b.isChecked) {
-          final aOrder = _itemAisleOrders[a.name] ?? 99.0;
-          final bOrder = _itemAisleOrders[b.name] ?? 99.0;
-          return aOrder.compareTo(bOrder);
+          final catA = _itemCategories[a.name ?? ''] ?? ItemCategory.unmapped;
+          final catB = _itemCategories[b.name ?? ''] ?? ItemCategory.unmapped;
+          
+          // Look up where these zones live in the current store
+          final posA = _detectedShop!.zoneLayout.firstWhere(
+            (z) => z.category == catA, 
+            orElse: () => ZonePosition()..aisleOrder = 99.0
+          ).aisleOrder;
+          
+          final posB = _detectedShop!.zoneLayout.firstWhere(
+            (z) => z.category == catB, 
+            orElse: () => ZonePosition()..aisleOrder = 99.0
+          ).aisleOrder;
+          
+          // Sort by the physical aisle order of their zones
+          int routeComparison = posA.compareTo(posB);
+          
+          // If they are in the exact same zone, sort alphabetically
+          if (routeComparison == 0) {
+            return (a.name ?? '').compareTo(b.name ?? '');
+          }
+          return routeComparison;
         }
 
         return 0; 
@@ -251,7 +264,7 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
   }
 
   Future<void> _saveListState() async {
-    _currentList.lastModified = DateTime.now();
+    _currentList.lastModified = DateTime.now().toUtc();
     await widget.isar.writeTxn(() async { 
       await widget.isar.smartLists.put(_currentList); 
     });
@@ -355,7 +368,7 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
         }
         _currentList.items = List.from(_currentList.items);
       });
-      _sortList(); 
+      _updateAisleOrdersAndSort(); // Re-sort with categories!
       return;
     }
 
@@ -364,6 +377,7 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
       final newMaster = MasterProduct()
         ..name = cleanName
         ..emoji = emoji ?? '🛒'
+        ..category = ItemCategory.unmapped // Start unmapped so the Wikipedia effect can fix it later!
         ..defaultShops = shops;
       await widget.isar.writeTxn(() async { await widget.isar.masterProducts.put(newMaster); });
     }
@@ -378,7 +392,7 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
       
       _currentList.items = [..._currentList.items, newItem];
     });
-    _sortList(); 
+    _updateAisleOrdersAndSort(); // Fetch the new category and sort
   }
 
   void _updateQuantity(int index, double delta) {
@@ -431,42 +445,49 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true, 
-      builder: (ctx) => SizedBox(
-        height: MediaQuery.of(context).size.height * 0.5, 
-        child: EmojiPicker(
-          config: Config(
-            bottomActionBarConfig: const BottomActionBarConfig(
-              showSearchViewButton: true, 
-              showBackspaceButton: true,
+      builder: (ctx) => SafeArea(
+        child: SizedBox(
+          height: MediaQuery.of(context).size.height * 0.5, 
+          child: EmojiPicker(
+            config: Config(
+              checkPlatformCompatibility: true,
+              emojiTextStyle: const TextStyle(
+                fontSize: 24,
+                fontFamilyFallback: ['Apple Color Emoji', 'Noto Color Emoji'],
+              ),
+              bottomActionBarConfig: const BottomActionBarConfig(
+                showSearchViewButton: true, 
+                showBackspaceButton: true,
+              ),
+              searchViewConfig: const SearchViewConfig(
+                hintText: 'Rechercher un emoji...', 
+              ),
+              categoryViewConfig: CategoryViewConfig(
+                iconColorSelected: Colors.blue.shade700,
+                indicatorColor: Colors.blue.shade700,
+              ),
             ),
-            searchViewConfig: const SearchViewConfig(
-              hintText: 'Rechercher un emoji...', 
-            ),
-            categoryViewConfig: CategoryViewConfig(
-              iconColorSelected: Colors.blue.shade700,
-              indicatorColor: Colors.blue.shade700,
-            ),
-          ),
-          onEmojiSelected: (category, emoji) async {
-            final newEmoji = emoji.emoji;
-            final itemName = _currentList.items[index].name!;
+            onEmojiSelected: (category, emoji) async {
+              final newEmoji = emoji.emoji;
+              final itemName = _currentList.items[index].name!;
 
-            setState(() { 
-              _currentList.items[index].emoji = newEmoji; 
-              _currentList.items = List.from(_currentList.items); 
-            });
-            _saveListState();
-            
-            final master = await widget.isar.masterProducts.where().nameEqualTo(itemName).findFirst();
-            if (master != null) {
-              master.emoji = newEmoji;
-              await widget.isar.writeTxn(() async { 
-                await widget.isar.masterProducts.put(master); 
+              setState(() { 
+                _currentList.items[index].emoji = newEmoji; 
+                _currentList.items = List.from(_currentList.items); 
               });
-            }
+              _saveListState();
+              
+              final master = await widget.isar.masterProducts.where().nameEqualTo(itemName).findFirst();
+              if (master != null) {
+                master.emoji = newEmoji;
+                await widget.isar.writeTxn(() async { 
+                  await widget.isar.masterProducts.put(master); 
+                });
+              }
 
-            if (mounted) Navigator.pop(ctx);
-          },
+              if (mounted) Navigator.pop(ctx);
+            },
+          ),
         ),
       ),
     );
@@ -486,7 +507,6 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
       // If we check it off, save it as the "last checked" for the Undo button
       if (newValue == true) {
         _lastCheckedItemName = itemName;
-        // --- NEW: Record sequence ---
         if (itemName != null && _detectedShop != null) {
            _checkSequence.remove(itemName); 
            _checkSequence.add(itemName);
@@ -508,11 +528,10 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
       final master = await widget.isar.masterProducts.where().nameEqualTo(itemName).findFirst();
       if (master != null) {
         await widget.isar.writeTxn(() async {
-          master.lastPurchasedAt = DateTime.now(); 
+          master.lastPurchasedAt = DateTime.now().toUtc(); 
           await widget.isar.masterProducts.put(master);
         });
         
-        // --- NEW: Trigger a rebuild AFTER the database update so PredictionBanner catches the new date!
         if (mounted) {
            setState(() {});
         }
@@ -520,28 +539,24 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
     }
   }
 
-  // --- NEW: The Undo Logic ---
   Future<void> _undoLastCheck() async {
     if (_lastCheckedItemName == null) return;
     
     final itemNameToUndo = _lastCheckedItemName!;
     
     setState(() {
-      // Find the item and uncheck it
       for (var item in _currentList.items) {
         if (item.name == itemNameToUndo) {
           item.isChecked = false;
           break;
         }
       }
-      // Hide the Undo button now that we've used it
       _lastCheckedItemName = null;
     });
     
     await _sortList();
     if (!mounted) return;
 
-    // Remove the "purchased" timestamp from the database so the prediction banner stays accurate
     final master = await widget.isar.masterProducts.where().nameEqualTo(itemNameToUndo).findFirst();
     if (master != null) {
        await widget.isar.writeTxn(() async {
@@ -561,7 +576,6 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
       appBar: AppBar(
         title: Text(_currentList.name),
         actions: [
-          // THE NEW UNDO BUTTON - Only shows if an item was recently checked off!
           if (_lastCheckedItemName != null)
             IconButton(
               icon: const Icon(Icons.undo),
@@ -578,7 +592,6 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
         children: [
           SyncBanner(syncService: widget.syncService),
           
-          // --- Store Detection Banner (shows when geofence fires, waits for user confirmation) ---
           if (_pendingShop != null)
             StoreDetectionBanner(
               detectedShop: _pendingShop!,
@@ -619,55 +632,67 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
           ],
           
           Expanded(
-            child: displayedItems.isEmpty
-                ? const Center(child: Text('No items to display here.'))
-                : ListView.builder(
-                    padding: const EdgeInsets.only(bottom: 80), 
-                    itemCount: displayedItems.length,
-                    itemBuilder: (context, index) {
-                      final item = displayedItems[index];
-                      final realIndex = _currentList.items.indexOf(item);
+            // NEW: Added RefreshIndicator for pull-to-refresh
+            child: RefreshIndicator(
+              onRefresh: _handleManualRefresh,
+              child: displayedItems.isEmpty
+                  ? ListView(
+                      // Using ListView with physics ensures pull-to-refresh works even when empty!
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      children: const [
+                        SizedBox(height: 100),
+                        Center(child: Text('No items to display here.')),
+                      ],
+                    )
+                  : ListView.builder(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.only(bottom: 80), 
+                      itemCount: displayedItems.length,
+                      itemBuilder: (context, index) {
+                        final item = displayedItems[index];
+                        final realIndex = _currentList.items.indexOf(item);
 
-                      return Dismissible(
-                        key: UniqueKey(),
-                        direction: DismissDirection.endToStart,
-                        background: Container(alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20.0), color: Colors.redAccent, child: const Icon(Icons.delete, color: Colors.white)),
-                        confirmDismiss: (direction) async {
-                          return await showDialog<bool>(
-                            context: context,
-                            builder: (context) => AlertDialog(
-                              title: const Text('Delete Item?'),
-                              content: Text('Are you sure you want to completely remove "${item.name}"?'),
-                              actions: [
-                                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-                                FilledButton(
-                                  style: FilledButton.styleFrom(backgroundColor: Colors.red), 
-                                  onPressed: () => Navigator.pop(context, true), 
-                                  child: const Text('Delete')
-                                ),
-                              ],
-                            ),
-                          );
-                        },
-                        onDismissed: (_) => _deleteItem(realIndex),
-                        child: SmartListItemCard(
-                          item: item,
-                          isExpanded: _expandedItemIndex == realIndex,
-                          isBlueprint: _currentList.type == ListType.blueprint,
-                          allShops: _shops.map((s) => s.name).toList(), 
-                          onShopToggled: (shopName, isSelected) => _toggleShopForItem(realIndex, shopName, isSelected), 
-                          onTap: () => setState(() => _expandedItemIndex = _expandedItemIndex == realIndex ? null : realIndex),
-                          onEmojiTap: () => _showEmojiPicker(realIndex),
-                          onToggle: (val) {
-                             if (val != null) {
-                               _toggleItemCheck(realIndex, val); 
-                             }
+                        return Dismissible(
+                          key: UniqueKey(),
+                          direction: DismissDirection.endToStart,
+                          background: Container(alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20.0), color: Colors.redAccent, child: const Icon(Icons.delete, color: Colors.white)),
+                          confirmDismiss: (direction) async {
+                            return await showDialog<bool>(
+                              context: context,
+                              builder: (context) => AlertDialog(
+                                title: const Text('Delete Item?'),
+                                content: Text('Are you sure you want to completely remove "${item.name}"?'),
+                                actions: [
+                                  TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+                                  FilledButton(
+                                    style: FilledButton.styleFrom(backgroundColor: Colors.red), 
+                                    onPressed: () => Navigator.pop(context, true), 
+                                    child: const Text('Delete')
+                                  ),
+                                ],
+                              ),
+                            );
                           },
-                          onQuantityChange: (delta) => _updateQuantity(realIndex, delta),
-                        ),
-                      );
-                    },
-                  ),
+                          onDismissed: (_) => _deleteItem(realIndex),
+                          child: SmartListItemCard(
+                            item: item,
+                            isExpanded: _expandedItemIndex == realIndex,
+                            isBlueprint: _currentList.type == ListType.blueprint,
+                            allShops: _shops.map((s) => s.name).toList(), 
+                            onShopToggled: (shopName, isSelected) => _toggleShopForItem(realIndex, shopName, isSelected), 
+                            onTap: () => setState(() => _expandedItemIndex = _expandedItemIndex == realIndex ? null : realIndex),
+                            onEmojiTap: () => _showEmojiPicker(realIndex),
+                            onToggle: (val) {
+                               if (val != null) {
+                                 _toggleItemCheck(realIndex, val); 
+                               }
+                            },
+                            onQuantityChange: (delta) => _updateQuantity(realIndex, delta),
+                          ),
+                        );
+                      },
+                    ),
+            ),
           ),
         ],
       ),
